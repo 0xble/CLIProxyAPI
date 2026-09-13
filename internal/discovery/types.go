@@ -27,13 +27,14 @@ const (
 
 // ServiceSpec describes a service to be advertised on the local network.
 type ServiceSpec struct {
-	InstanceName string
-	ServiceType  string
-	Domain       string
-	Port         int
-	Subtypes     []string
-	TextRecords  []string
-	Interfaces   []net.Interface
+	InstanceName  string
+	ServiceType   string
+	Domain        string
+	Port          int
+	Subtypes      []string
+	TextRecords   []string
+	Interfaces    []net.Interface
+	AdvertisedIPs []string
 }
 
 // DiscoveredService describes a discovered AI gateway service on the LAN.

@@ -160,6 +160,10 @@ func BuildServiceSpec(cfg *config.Config, port int, tlsEnabled bool) (ServiceSpe
 	if len(ifaces) == 0 {
 		return ServiceSpec{}, fmt.Errorf("discovery: no qualified physical interfaces found matching filters (refusing fallback to all interfaces)")
 	}
+	advertisedIPs := extractInterfaceIPs(ifaces)
+	if len(advertisedIPs) == 0 {
+		return ServiceSpec{}, fmt.Errorf("discovery: no usable IP addresses found on specified interfaces")
+	}
 
 	// 6. Build TXT records
 	txtOpts := DefaultTXTOptions()
@@ -175,12 +179,13 @@ func BuildServiceSpec(cfg *config.Config, port int, tlsEnabled bool) (ServiceSpe
 	txtRecords := BuildTXTRecords(txtOpts)
 
 	return ServiceSpec{
-		InstanceName: instanceName,
-		ServiceType:  serviceType,
-		Domain:       DefaultDomain,
-		Port:         port,
-		Subtypes:     subtypes,
-		TextRecords:  txtRecords,
-		Interfaces:   ifaces,
+		InstanceName:  instanceName,
+		ServiceType:   serviceType,
+		Domain:        DefaultDomain,
+		Port:          port,
+		Subtypes:      subtypes,
+		TextRecords:   txtRecords,
+		Interfaces:    ifaces,
+		AdvertisedIPs: advertisedIPs,
 	}, nil
 }

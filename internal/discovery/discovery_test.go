@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -220,6 +221,19 @@ func TestValidation_ServiceTypeAndLabels(t *testing.T) {
 	}
 	if len(truncated)%3 != 0 {
 		t.Errorf("expected clean UTF-8 rune boundary (multiple of 3 for Chinese characters), got %d", len(truncated))
+	}
+}
+
+func TestFilterUsableIPs(t *testing.T) {
+	ips := []net.IP{
+		net.ParseIP("192.0.2.10"),
+		net.ParseIP("fe80::1"),
+		net.ParseIP("127.0.0.1"),
+		net.ParseIP("::"),
+	}
+	usable := filterUsableIPs(ips)
+	if len(usable) != 1 || usable[0].String() != "192.0.2.10" {
+		t.Fatalf("filterUsableIPs() = %v, want [192.0.2.10]", usable)
 	}
 }
 

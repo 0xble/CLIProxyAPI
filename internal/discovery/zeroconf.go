@@ -60,7 +60,7 @@ func extractInterfaceIPs(ifaces []net.Interface) []string {
 			case *net.IPAddr:
 				ip = v.IP
 			}
-			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
 				continue
 			}
 			ips = append(ips, ip.String())
@@ -119,9 +119,12 @@ func (a *ZeroconfAdvertiser) Start(ctx context.Context, spec ServiceSpec) (err e
 	}
 
 	cleanHost := extractCleanHost()
-	ips := extractInterfaceIPs(spec.Interfaces)
+	ips := spec.AdvertisedIPs
 	if len(ips) == 0 {
-		return fmt.Errorf("discovery: no qualified IP addresses found on specified interfaces")
+		ips = extractInterfaceIPs(spec.Interfaces)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("discovery: no usable IP addresses found on specified interfaces")
 	}
 
 	// Primary advertisement: e.g. _ai-gateway._tcp with native comma-separated subtypes (RFC 6763 §7.1)
@@ -228,6 +231,9 @@ func (b *ZeroconfBrowser) Browse(ctx context.Context, serviceType, domain string
 				continue
 			}
 			svc := entryToDiscovered(entry)
+			if len(svc.IPv4) == 0 && len(svc.IPv6) == 0 {
+				continue
+			}
 			key := fmt.Sprintf("%s:%s:%d", svc.InstanceName, svc.Host, svc.Port)
 			mu.Lock()
 			if !seen[key] {
@@ -308,8 +314,8 @@ func entryToDiscovered(e *zeroconf.ServiceEntry) DiscoveredService {
 		Domain:       e.Domain,
 		Host:         e.HostName,
 		Port:         port,
-		IPv4:         e.AddrIPv4,
-		IPv6:         e.AddrIPv6,
+		IPv4:         filterUsableIPs(e.AddrIPv4),
+		IPv6:         filterUsableIPs(e.AddrIPv6),
 		Product:      parsed["product"],
 		Version:      parsed["version"],
 		NodeRole:     parsed["node_role"],
@@ -347,4 +353,15 @@ func entryToDiscovered(e *zeroconf.ServiceEntry) DiscoveredService {
 	}
 
 	return svc
+}
+
+func filterUsableIPs(ips []net.IP) []net.IP {
+	usable := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		usable = append(usable, ip)
+	}
+	return usable
 }

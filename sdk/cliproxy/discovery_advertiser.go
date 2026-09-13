@@ -153,7 +153,8 @@ func specEqual(a, b discovery.ServiceSpec) bool {
 		a.Port != b.Port ||
 		len(a.Subtypes) != len(b.Subtypes) ||
 		len(a.TextRecords) != len(b.TextRecords) ||
-		len(a.Interfaces) != len(b.Interfaces) {
+		len(a.Interfaces) != len(b.Interfaces) ||
+		len(a.AdvertisedIPs) != len(b.AdvertisedIPs) {
 		return false
 	}
 	for i := range a.Subtypes {
@@ -168,6 +169,11 @@ func specEqual(a, b discovery.ServiceSpec) bool {
 	}
 	for i := range a.Interfaces {
 		if a.Interfaces[i].Name != b.Interfaces[i].Name {
+			return false
+		}
+	}
+	for i := range a.AdvertisedIPs {
+		if a.AdvertisedIPs[i] != b.AdvertisedIPs[i] {
 			return false
 		}
 	}
