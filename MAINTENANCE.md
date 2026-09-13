@@ -7,13 +7,14 @@ Both default branches are `main`. Canonical checkout: `~/Repos/CLIProxyAPI`.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
 `origin` publishes to the owned fork. `upstream` is fetch-only.
-This fork provides a place for future routing changes. Setup introduces no runtime behavior changes.
+This fork supplies the local gateway build. Initial fork setup introduced no routing behavior changes.
 
 ## Preserve
 
 - Preserve upstream routing, credential refresh ownership, and protocol compatibility unless a separately accepted feature changes them.
 - Keep credentials, account identities, quota snapshots, and live configuration outside this public repository.
-- The installed gateway remains the official pinned release managed by dotfiles. Source synchronization and publication do not authorize installation or runtime activation.
+- The dedicated `maintain-cliproxyapi-fork` Hermes job owns synchronization and the authorized local installation. Other maintenance agents must not race that job.
+- Install only published fork revisions using `cliproxyapi-install <full-sha>`. The installer verifies the active process, binary checksum, and provider inference and restores the previous release on failed activation.
 
 ## Active patches
 
@@ -36,6 +37,8 @@ For source rollback, revert the identified fork change through a new reviewed PR
 
 Follow `AGENTS.md`. For Go changes run `gofmt`, relevant regressions, `go test ./...`, and `go build -o /tmp/cliproxyapi-fork-check ./cmd/server`.
 For routing changes include weighted selection, session affinity, and quota failover fixtures under `sdk/cliproxy/auth` and `test`.
-Documentation-only setup requires diff inspection, a compile check, and proof that no Go or runtime configuration files changed.
+Documentation-only changes require diff inspection and a compile check. Runtime changes require real Codex Responses/tool-result and Claude Messages canaries in addition to source tests.
 After publication verify local `main` equals `origin/main`, and `git rev-list --left-right --count upstream/main...main` reports zero upstream-only commits.
-Report source, publication, installation, and active runtime state separately. No install or runtime transition is part of this initial fork setup.
+Report source, publication, installation, and active runtime state separately. A maintenance run succeeds only after the published fork revision is active and verified. Preserve the prior release for rollback.
+
+Known baseline on 2026-09-13: `TestOpenAICompatExecutorToolResultContentByInputModalities` fails identically on untouched upstream v7.3.1 and the fork because its image/tool-result expectations differ from the translator output. The initial installation changes no Go source. This inherited failure may be reported separately only while unchanged-source proof, routing/quota tests, build, and live Codex/Claude canaries pass. New failures or changes affecting that path block promotion.
