@@ -11,7 +11,6 @@ This fork provides a place for future routing changes. Setup introduces no runti
 
 ## Preserve
 
-- Develop in linked worktrees under `.worktrees/`, keeping the primary checkout on `main`.
 - Preserve upstream routing, credential refresh ownership, and protocol compatibility unless a separately accepted feature changes them.
 - Keep credentials, account identities, quota snapshots, and live configuration outside this public repository.
 - The installed gateway remains the official pinned release managed by dotfiles. Source synchronization and publication do not authorize installation or runtime activation.
