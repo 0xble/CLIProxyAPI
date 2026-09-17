@@ -6,6 +6,7 @@ Maintained fork: `0xble/CLIProxyAPI` of `router-for-me/CLIProxyAPI`.
 Both default branches are `main`. Canonical checkout: `~/Repos/CLIProxyAPI`.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
+Accepted upstream baseline as of 2026-09-17: `b773607e3e7756dc6020a291825e4eb08899595a`.
 `origin` publishes to the owned fork. `upstream` is fetch-only.
 This fork supplies the local gateway build. Initial fork setup introduced no routing behavior changes.
 
@@ -41,4 +42,4 @@ Documentation-only changes require diff inspection and a compile check. Runtime 
 After publication verify local `main` equals `origin/main`, and `git rev-list --left-right --count upstream/main...main` reports zero upstream-only commits.
 Report source, publication, installation, and active runtime state separately. A maintenance run succeeds only after the published fork revision is active and verified. Preserve the prior release for rollback.
 
-Known baseline on 2026-09-13: `TestOpenAICompatExecutorToolResultContentByInputModalities` fails identically on untouched upstream v7.3.1 and the fork because its image/tool-result expectations differ from the translator output. The initial installation changes no Go source. This inherited failure may be reported separately only while unchanged-source proof, routing/quota tests, build, and live Codex/Claude canaries pass. New failures or changes affecting that path block promotion.
+Baseline: `go test ./...` passes fully with no accepted failing tests. `TestOpenAICompatExecutorToolResultContentByInputModalities` was an accepted inherited failure from 2026-09-13 through the 2026-09-15 sync; it passes as of upstream `b773607e3e7756dc6020a291825e4eb08899595a` and is retired. Any test failure now blocks promotion. If a future inherited failure appears, reproduce it on an untouched upstream checkout first, record the exact test name and upstream SHA here, and report it separately only while unchanged-source proof, routing/quota tests, build, and live Codex/Claude canaries pass.
