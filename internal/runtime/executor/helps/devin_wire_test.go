@@ -2,6 +2,7 @@ package helps
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 
@@ -289,6 +290,43 @@ func TestParseDevinTrailerError(t *testing.T) {
 	code, err = ParseDevinTrailerError(deadlineJSON)
 	if code != 504 {
 		t.Errorf("status code = %d, want 504 for deadline_exceeded", code)
+	}
+
+	// Case: transient high-demand capacity error encoded as permission_denied → 429
+	highDemandJSON := []byte(`{"error":{"code":"permission_denied","message":"The model is currently in high demand, please try again later (trace ID: 00000000000000000000000000000000)"}}`)
+	code, err = ParseDevinTrailerError(highDemandJSON)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if code != 429 {
+		t.Errorf("status code = %d, want 429 for transient high-demand permission_denied", code)
+	}
+
+	// Case: genuine permission error remains 403
+	genuinePermJSON := []byte(`{"error":{"code":"permission_denied","message":"model access is not allowed for this account"}}`)
+	code, err = ParseDevinTrailerError(genuinePermJSON)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if code != 403 {
+		t.Errorf("status code = %d, want 403 for genuine permission_denied", code)
+	}
+
+	// Case: resource_exhausted remains 429 (unchanged behavior)
+	resourceExhaustedJSON := []byte(`{"error":{"code":"resource_exhausted","message":"rate limit exceeded"}}`)
+	code, err = ParseDevinTrailerError(resourceExhaustedJSON)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if code != 429 {
+		t.Errorf("status code = %d, want 429 for resource_exhausted", code)
+	}
+
+	// Case: high-demand matching is case-insensitive
+	highDemandLowerJSON := []byte(`{"error":{"code":"permission_denied","message":"HIGH DEMAND: please retry"}}`)
+	code, err = ParseDevinTrailerError(highDemandLowerJSON)
+	if code != 429 {
+		t.Errorf("status code = %d, want 429 for case-insensitive high demand match", code)
 	}
 }
 
@@ -587,4 +625,368 @@ func extractField15Subfields(t *testing.T, reqBytes []byte) (string, map[int]uin
 		}
 	}
 	return sessionID, subfields
+}
+
+func TestParseDevinUsageField_HeadersAndField4(t *testing.T) {
+	var f7Bytes []byte
+	f7Bytes = protowire.AppendTag(f7Bytes, 2, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 3)
+
+	f7Bytes = protowire.AppendTag(f7Bytes, 4, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 58)
+
+	f7Bytes = protowire.AppendTag(f7Bytes, 3, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 39)
+
+	f7Bytes = protowire.AppendTag(f7Bytes, 5, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 19179)
+
+	f7Bytes = protowire.AppendTag(f7Bytes, 6, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 66)
+
+	// Submessage 1: openai-version
+	var h1 []byte
+	h1 = protowire.AppendTag(h1, 1, protowire.BytesType)
+	h1 = protowire.AppendString(h1, "openai-version")
+	h1 = protowire.AppendTag(h1, 2, protowire.BytesType)
+	h1 = protowire.AppendString(h1, "2020-10-01")
+	f7Bytes = protowire.AppendTag(f7Bytes, 8, protowire.BytesType)
+	f7Bytes = protowire.AppendBytes(f7Bytes, h1)
+
+	// Submessage 2: x-request-id
+	var h2 []byte
+	h2 = protowire.AppendTag(h2, 1, protowire.BytesType)
+	h2 = protowire.AppendString(h2, "x-request-id")
+	h2 = protowire.AppendTag(h2, 2, protowire.BytesType)
+	h2 = protowire.AppendString(h2, "req_5bb00ad48ae048119e3420bddf36257f")
+	f7Bytes = protowire.AppendTag(f7Bytes, 8, protowire.BytesType)
+	f7Bytes = protowire.AppendBytes(f7Bytes, h2)
+
+	// Submessage 3: openai-processing-ms
+	var h3 []byte
+	h3 = protowire.AppendTag(h3, 1, protowire.BytesType)
+	h3 = protowire.AppendString(h3, "openai-processing-ms")
+	h3 = protowire.AppendTag(h3, 2, protowire.BytesType)
+	h3 = protowire.AppendString(h3, "419")
+	f7Bytes = protowire.AppendTag(f7Bytes, 8, protowire.BytesType)
+	f7Bytes = protowire.AppendBytes(f7Bytes, h3)
+
+	f7Bytes = protowire.AppendTag(f7Bytes, 9, protowire.BytesType)
+	f7Bytes = protowire.AppendString(f7Bytes, "gpt-5-6-luna-low")
+
+	usage := parseDevinUsageField(f7Bytes)
+	if usage == nil {
+		t.Fatal("expected non-nil usage")
+	}
+
+	if usage.PromptTokens != 3 {
+		t.Errorf("PromptTokens = %d, want 3", usage.PromptTokens)
+	}
+	if usage.CacheWriteTokens != 58 {
+		t.Errorf("CacheWriteTokens = %d, want 58", usage.CacheWriteTokens)
+	}
+	if usage.CompletionTokens != 39 {
+		t.Errorf("CompletionTokens = %d, want 39", usage.CompletionTokens)
+	}
+	if usage.CachedTokens != 19179 {
+		t.Errorf("CachedTokens = %d, want 19179", usage.CachedTokens)
+	}
+	if usage.StatusCode != 66 {
+		t.Errorf("StatusCode = %d, want 66", usage.StatusCode)
+	}
+	if usage.RequestID != "req_5bb00ad48ae048119e3420bddf36257f" {
+		t.Errorf("RequestID = %q, want clean request-id", usage.RequestID)
+	}
+	if usage.ModelName != "gpt-5-6-luna-low" {
+		t.Errorf("ModelName = %q, want gpt-5-6-luna-low", usage.ModelName)
+	}
+	if usage.Headers["openai-processing-ms"] != "419" {
+		t.Errorf("header processing-ms = %q, want 419", usage.Headers["openai-processing-ms"])
+	}
+	if usage.Headers["openai-version"] != "2020-10-01" {
+		t.Errorf("header openai-version = %q, want 2020-10-01", usage.Headers["openai-version"])
+	}
+}
+
+func TestParseDevinUsageField_AnthropicRequestId(t *testing.T) {
+	var f7Bytes []byte
+	f7Bytes = protowire.AppendTag(f7Bytes, 2, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 4)
+
+	f7Bytes = protowire.AppendTag(f7Bytes, 3, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 109)
+
+	f7Bytes = protowire.AppendTag(f7Bytes, 5, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 577)
+
+	// Anthropic uses capitalized "Request-Id"
+	var h []byte
+	h = protowire.AppendTag(h, 1, protowire.BytesType)
+	h = protowire.AppendString(h, "Request-Id")
+	h = protowire.AppendTag(h, 2, protowire.BytesType)
+	h = protowire.AppendString(h, "req_011Cf1JivhJrXDq9ycq7cEtH")
+	f7Bytes = protowire.AppendTag(f7Bytes, 8, protowire.BytesType)
+	f7Bytes = protowire.AppendBytes(f7Bytes, h)
+
+	usage := parseDevinUsageField(f7Bytes)
+	if usage == nil {
+		t.Fatal("expected non-nil usage")
+	}
+	if usage.RequestID != "req_011Cf1JivhJrXDq9ycq7cEtH" {
+		t.Errorf("RequestID = %q, want req_011Cf1JivhJrXDq9ycq7cEtH", usage.RequestID)
+	}
+	if usage.PromptTokens != 4 {
+		t.Errorf("PromptTokens = %d, want 4", usage.PromptTokens)
+	}
+	if usage.CompletionTokens != 109 {
+		t.Errorf("CompletionTokens = %d, want 109", usage.CompletionTokens)
+	}
+	if usage.CachedTokens != 577 {
+		t.Errorf("CachedTokens = %d, want 577", usage.CachedTokens)
+	}
+}
+
+func TestParseDevinResponseDimensionGroups(t *testing.T) {
+	buildMetric := func(key string, val float32) []byte {
+		// Dimension submessage (Tag 4 of Metric)
+		var dim []byte
+		dim = protowire.AppendTag(dim, 2, protowire.Fixed32Type)
+		dim = protowire.AppendFixed32(dim, math.Float32bits(val))
+
+		// Metric submessage (Tag 2 of Group)
+		var metric []byte
+		metric = protowire.AppendTag(metric, 4, protowire.BytesType)
+		metric = protowire.AppendBytes(metric, dim)
+		metric = protowire.AppendTag(metric, 5, protowire.BytesType)
+		metric = protowire.AppendString(metric, key)
+		return metric
+	}
+
+	// Build Group (Tag 28)
+	var group []byte
+	group = protowire.AppendTag(group, 1, protowire.BytesType)
+	group = protowire.AppendString(group, "Token Usage")
+
+	group = protowire.AppendTag(group, 2, protowire.BytesType)
+	group = protowire.AppendBytes(group, buildMetric("input_tokens", 575.0))
+
+	group = protowire.AppendTag(group, 2, protowire.BytesType)
+	group = protowire.AppendBytes(group, buildMetric("output_tokens", 5.0))
+
+	group = protowire.AppendTag(group, 2, protowire.BytesType)
+	group = protowire.AppendBytes(group, buildMetric("cached_input_tokens", 128.0))
+
+	// Envelope Tag 28
+	var root []byte
+	root = protowire.AppendTag(root, 28, protowire.BytesType)
+	root = protowire.AppendBytes(root, group)
+
+	promptTokens, completionTokens, cachedTokens, found := ParseDevinResponseDimensionGroups(root)
+	if !found {
+		t.Fatal("expected found = true")
+	}
+	if promptTokens != 575 {
+		t.Errorf("promptTokens = %d, want 575", promptTokens)
+	}
+	if completionTokens != 5 {
+		t.Errorf("completionTokens = %d, want 5", completionTokens)
+	}
+	if cachedTokens != 128 {
+		t.Errorf("cachedTokens = %d, want 128", cachedTokens)
+	}
+
+	// Verify inner group directly (as extracted by ParseDevinFrame case 28)
+	p2, c2, ca2, found2 := ParseDevinResponseDimensionGroups(group)
+	if !found2 || p2 != 575 || c2 != 5 || ca2 != 128 {
+		t.Errorf("inner group ParseDevinResponseDimensionGroups = (%d,%d,%d,%t), want (575,5,128,true)", p2, c2, ca2, found2)
+	}
+
+	// Verify multi-group where unrelated group precedes Token Usage
+	var latencyGroup []byte
+	latencyGroup = protowire.AppendTag(latencyGroup, 1, protowire.BytesType)
+	latencyGroup = protowire.AppendString(latencyGroup, "Latency Metrics")
+
+	p3, c3, ca3, found3 := ParseDevinResponseDimensionGroups(latencyGroup, group)
+	if !found3 || p3 != 575 || c3 != 5 || ca3 != 128 {
+		t.Errorf("multi-group ParseDevinResponseDimensionGroups = (%d,%d,%d,%t), want (575,5,128,true)", p3, c3, ca3, found3)
+	}
+}
+
+func TestParseDevinResponseDimensionGroups_UnrelatedGroup(t *testing.T) {
+	var group []byte
+	group = protowire.AppendTag(group, 1, protowire.BytesType)
+	group = protowire.AppendString(group, "Latency Metrics")
+
+	var root []byte
+	root = protowire.AppendTag(root, 28, protowire.BytesType)
+	root = protowire.AppendBytes(root, group)
+
+	promptTokens, completionTokens, cachedTokens, found := ParseDevinResponseDimensionGroups(root)
+	if found {
+		t.Errorf("expected found = false for unrelated group, got true with prompt=%d, comp=%d, cached=%d", promptTokens, completionTokens, cachedTokens)
+	}
+}
+
+func TestBuildDevinGetChatMessageRequest_FiltersAutomationUpdateAndObfuscatesDescriptions(t *testing.T) {
+	tools := []DevinTool{
+		{
+			Name:        "mcp__codex_app__automation_update",
+			Description: "Recurring automations",
+			Parameters:  []byte(`{"type":"object"}`),
+		},
+		{
+			Name:        "exec_command",
+			Description: "Runs a command in a bash shell, returning output or a session ID for ongoing interaction.",
+			Parameters:  []byte(`{"type":"object"}`),
+		},
+		{
+			Name:        "write_stdin",
+			Description: "Writes characters to an existing unified exec session and returns recent output.",
+			Parameters:  []byte(`{"type":"object"}`),
+		},
+	}
+
+	req := BuildDevinGetChatMessageRequest(
+		"token-123",
+		"device-seed-1",
+		"swe-2",
+		"system prompt",
+		nil,
+		tools,
+		nil,
+		1000,
+		"session-1",
+		"cascade-1",
+		nil,
+	)
+
+	reqStr := string(req)
+	if strings.Contains(reqStr, "automation_update") {
+		t.Fatalf("wire bytes should not contain automation_update")
+	}
+	if strings.Contains(reqStr, "a session ID") {
+		t.Fatalf("wire bytes should not contain 'a session ID'")
+	}
+	if !strings.Contains(reqStr, "an session ID") {
+		t.Fatalf("wire bytes should contain 'an session ID'")
+	}
+	if strings.Contains(reqStr, "to an existing unified") {
+		t.Fatalf("wire bytes should not contain 'to an existing unified'")
+	}
+	if !strings.Contains(reqStr, "to a existing unified") {
+		t.Fatalf("wire bytes should contain 'to a existing unified'")
+	}
+}
+
+func TestRegressionIssue5910_ClientMetadata(t *testing.T) {
+	b := BuildDevinClientMetadataBytes("test-session-token", "device-seed", "linux")
+	pos := 0
+	var ideName string
+	hasTag28 := false
+
+	for pos < len(b) {
+		num, typ, n := protowire.ConsumeTag(b[pos:])
+		if n <= 0 {
+			t.Fatalf("corrupt tag at %d", pos)
+		}
+		pos += n
+
+		if num == 1 && typ == protowire.BytesType {
+			val, bn := protowire.ConsumeBytes(b[pos:])
+			if bn <= 0 {
+				t.Fatalf("corrupt bytes at %d", pos)
+			}
+			pos += bn
+			ideName = string(val)
+		} else if num == 28 {
+			hasTag28 = true
+			nSkip := protowire.ConsumeFieldValue(num, typ, b[pos:])
+			if nSkip <= 0 {
+				t.Fatalf("corrupt field at %d", pos)
+			}
+			pos += nSkip
+		} else {
+			nSkip := protowire.ConsumeFieldValue(num, typ, b[pos:])
+			if nSkip <= 0 {
+				t.Fatalf("corrupt field at %d", pos)
+			}
+			pos += nSkip
+		}
+	}
+
+	if ideName != DevinDefaultClientName {
+		t.Errorf("BuildDevinClientMetadataBytes field 1 = %q, want %q", ideName, DevinDefaultClientName)
+	}
+	if hasTag28 {
+		t.Errorf("BuildDevinClientMetadataBytes should not emit field 28")
+	}
+}
+
+func TestRegressionIssue5910_UsageStatsCacheWriteTokens(t *testing.T) {
+	var f7Bytes []byte
+	// Field 2: input_tokens = 3
+	f7Bytes = protowire.AppendTag(f7Bytes, 2, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 3)
+
+	// Field 4: cache_write_tokens = 14361
+	f7Bytes = protowire.AppendTag(f7Bytes, 4, protowire.VarintType)
+	f7Bytes = protowire.AppendVarint(f7Bytes, 14361)
+
+	usage := parseDevinUsageField(f7Bytes)
+	if usage == nil {
+		t.Fatal("expected non-nil usage")
+	}
+
+	if usage.PromptTokens != 3 {
+		t.Errorf("PromptTokens = %d, want 3 (cache_write_tokens must not inflate prompt_tokens)", usage.PromptTokens)
+	}
+	if usage.CacheWriteTokens != 14361 {
+		t.Errorf("CacheWriteTokens = %d, want 14361", usage.CacheWriteTokens)
+	}
+}
+
+func TestRegressionIssue5910_ToolCallDeltaFields(t *testing.T) {
+	var tcBytes []byte
+	// Field 1: id
+	tcBytes = protowire.AppendTag(tcBytes, 1, protowire.BytesType)
+	tcBytes = protowire.AppendString(tcBytes, "call_999")
+	// Field 2: name
+	tcBytes = protowire.AppendTag(tcBytes, 2, protowire.BytesType)
+	tcBytes = protowire.AppendString(tcBytes, "custom_bash")
+	// Field 3: arguments
+	tcBytes = protowire.AppendTag(tcBytes, 3, protowire.BytesType)
+	tcBytes = protowire.AppendString(tcBytes, `{"cmd":"pwd"}`)
+	// Field 4: invalid_json_str
+	tcBytes = protowire.AppendTag(tcBytes, 4, protowire.BytesType)
+	tcBytes = protowire.AppendString(tcBytes, `pwd && ls`)
+	// Field 5: invalid_json_err
+	tcBytes = protowire.AppendTag(tcBytes, 5, protowire.BytesType)
+	tcBytes = protowire.AppendString(tcBytes, "syntax error near unexpected token")
+	// Field 6: is_custom_tool_call
+	tcBytes = protowire.AppendTag(tcBytes, 6, protowire.VarintType)
+	tcBytes = protowire.AppendVarint(tcBytes, 1)
+
+	tc, err := parseDevinToolCallDelta(tcBytes)
+	if err != nil {
+		t.Fatalf("parseDevinToolCallDelta failed: %v", err)
+	}
+
+	if tc.ID != "call_999" {
+		t.Errorf("tc.ID = %q, want call_999", tc.ID)
+	}
+	if tc.Name != "custom_bash" {
+		t.Errorf("tc.Name = %q, want custom_bash", tc.Name)
+	}
+	if tc.Arguments != `{"cmd":"pwd"}` {
+		t.Errorf("tc.Arguments = %q, want {\"cmd\":\"pwd\"}", tc.Arguments)
+	}
+	if tc.InvalidJSONStr != "pwd && ls" {
+		t.Errorf("tc.InvalidJSONStr = %q, want 'pwd && ls'", tc.InvalidJSONStr)
+	}
+	if tc.InvalidJSONErr != "syntax error near unexpected token" {
+		t.Errorf("tc.InvalidJSONErr = %q, want 'syntax error near unexpected token'", tc.InvalidJSONErr)
+	}
+	if !tc.IsCustomToolCall {
+		t.Errorf("tc.IsCustomToolCall = %v, want true", tc.IsCustomToolCall)
+	}
 }
