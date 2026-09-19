@@ -6,7 +6,7 @@ Maintained fork: `0xble/CLIProxyAPI` of `router-for-me/CLIProxyAPI`.
 Both default branches are `main`. Canonical checkout: `~/Repos/CLIProxyAPI`.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
-Accepted upstream baseline as of 2026-09-17: `b773607e3e7756dc6020a291825e4eb08899595a`.
+Accepted upstream baseline as of 2026-09-19: `61fdfc341b96178a8dcb53f2efc46cbc341d267c`.
 `origin` publishes to the owned fork. `upstream` is fetch-only.
 This fork supplies the local gateway build. Initial fork setup introduced no routing behavior changes.
 
