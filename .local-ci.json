@@ -1,0 +1,11 @@
+{
+  "schema": "local-ci/v1",
+  "gate": "go build -o /tmp/cliproxyapi-local-ci ./cmd/server",
+  "merge_requires": "full",
+  "release_and_deploy_are_separate": true,
+  "separate_lanes": [
+    "model catalog refresh",
+    "Docker image publication",
+    "tagged release publication"
+  ]
+}
