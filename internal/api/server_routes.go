@@ -184,7 +184,7 @@ func (s *Server) setupRoutes() {
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
 
-	s.engine.GET("/devin/callback", func(c *gin.Context) {
+	devinCallbackHandler := func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		code := strings.TrimSpace(c.Query("code"))
 		state := strings.TrimSpace(c.Query("state"))
@@ -202,7 +202,10 @@ func (s *Server) setupRoutes() {
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
-	})
+	}
+
+	s.engine.GET("/callback", devinCallbackHandler)
+	s.engine.GET("/devin/callback", devinCallbackHandler)
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
 }
@@ -709,6 +712,12 @@ func formatHomeCodexModel(entry homeModelEntry) map[string]any {
 	}
 	if entry.ownedBy != "" {
 		model["owned_by"] = entry.ownedBy
+	}
+	for _, p := range entry.providers {
+		if strings.EqualFold(p, "devin") {
+			model["type"] = "devin"
+			break
+		}
 	}
 	if entry.displayName != "" {
 		model["display_name"] = entry.displayName
