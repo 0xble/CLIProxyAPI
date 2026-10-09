@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/client/grokbuild"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/client/grokbuild"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -50,16 +50,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	originalPayload := originalPayloadSource
 	isCompat := e.resolveCodexModelIsCompat(auth, req, baseModel)
-	originalTranslated, body := translateCodexRequestPair(from, to, baseModel, originalPayload, req.Payload, true, isCompat)
-
-	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
+	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntent(from, to, baseModel, originalPayload, req.Payload, true, isCompat)
 	if err != nil {
 		return nil, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts))
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "generate")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
@@ -77,22 +78,21 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
-	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
+	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
 	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
 	if errReplay != nil {
 		return nil, errReplay
 	}
-	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	var identityState codexIdentityConfuseState
-	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
+	httpReq, upstreamBody, err := e.cacheHelper(ctx, from, url, req, body, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
+	reporter.SetTranslatedReasoningEffort(upstreamBody, to.String())
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
+	applyCodexRoutingHint(ctx, httpReq.Header, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -128,7 +128,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
 			return nil, readErr
 		}
-		data = applyCodexIdentityConfuseResponsePayload(data, identityState)
 		if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, data); errClearReplay != nil {
 			return nil, errClearReplay
 		}
@@ -184,13 +183,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	sawOutputDelta := false
 	if buffering {
 		for scanner.Scan() {
-			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
+			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			translatedLine := bytes.Clone(line)
+			var translatedLine []byte
 			isHandshake := false
 			terminalSuccess := false
 
-			if transformed, ok := grokbuild.TransformKeepaliveSSELine(translatedLine, isGrokClient); ok {
+			if transformed, ok := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); ok {
 				translatedLine = transformed
 				isHandshake = true
 			} else if bytes.HasPrefix(line, dataTag) {
@@ -267,10 +266,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				// Lines that are not data: frames - SSE comments, event:, id:, retry: and the blank
 				// separator - carry no event to check against the allow-list, so they are held with
 				// the frame they belong to. They spend the same budgets.
+				// Non-data lines also need owned storage before translation can retain them.
+				translatedLine = bytes.Clone(line)
 				isHandshake = true
 			}
 
-			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
 			if isHandshake && !terminalSuccess {
 				frameBytes := len(line)
@@ -317,6 +317,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+			if len(bufferedChunks) == 0 && len(initialChunks) == 0 {
+				emptyErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before first payload"}
+				helps.RecordAPIResponseError(ctx, e.cfg, emptyErr)
+				reporter.PublishFailure(ctx, emptyErr)
+				closedCh := make(chan cliproxyexecutor.StreamChunk)
+				close(closedCh)
+				return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: closedCh}, nil
+			}
 			streamErr := newCodexIncompleteStreamError()
 			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 			reporter.PublishFailure(ctx, streamErr)
@@ -348,6 +356,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 	}
 
+	emittedCount := 0
+	for _, chunk := range bufferedChunks {
+		if len(chunk) > 0 {
+			emittedCount++
+		}
+	}
+	for _, chunk := range initialChunks {
+		if len(chunk) > 0 {
+			emittedCount++
+		}
+	}
 	go func() {
 		defer close(out)
 		defer func() {
@@ -356,12 +375,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}()
 		for scanner.Scan() {
-			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
+			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			translatedLine := bytes.Clone(line)
+			var translatedLine []byte
 			terminalSuccess := false
 
-			if transformed, ok := grokbuild.TransformKeepaliveSSELine(translatedLine, isGrokClient); ok {
+			if transformed, ok := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); ok {
 				translatedLine = transformed
 			} else if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
@@ -420,13 +439,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					}
 					translatedLine = append([]byte("data: "), data...)
 				}
+			} else {
+				translatedLine = bytes.Clone(line)
 			}
 
-			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+					if len(chunks[i]) > 0 {
+						emittedCount++
+					}
 				case <-ctx.Done():
 					return
 				}
@@ -440,6 +463,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+		}
+		if emittedCount == 0 {
+			emptyErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before first payload"}
+			helps.RecordAPIResponseError(ctx, e.cfg, emptyErr)
+			reporter.PublishFailure(ctx, emptyErr)
+			return
 		}
 		streamErr := newCodexIncompleteStreamError()
 		helps.RecordAPIResponseError(ctx, e.cfg, streamErr)

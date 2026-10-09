@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -58,6 +58,7 @@ type codexWebsocketSession struct {
 	connCloser                *websocketConnectionCloser
 	wsURL                     string
 	authID                    string
+	proxyURL                  string
 	multiAgentV2OptimizedConn *websocket.Conn
 	lifecycleBindMu           sync.Mutex
 	lifecycle                 cliproxyexecutor.ExecutionLifecycle
@@ -70,6 +71,11 @@ type codexWebsocketSession struct {
 	activeCh     chan codexWebsocketRead
 	activeDone   <-chan struct{}
 	activeCancel context.CancelFunc
+	terminalConn *websocket.Conn
+	terminalErr  error
+
+	responseStateConn   *websocket.Conn
+	terminalResponseIDs map[string]struct{}
 
 	readerConn *websocket.Conn
 
@@ -96,6 +102,11 @@ func (s *codexWebsocketSession) setActive(conn *websocket.Conn, ch chan codexWeb
 		return
 	}
 	s.activeMu.Lock()
+	s.setActiveLocked(conn, ch)
+	s.activeMu.Unlock()
+}
+
+func (s *codexWebsocketSession) setActiveLocked(conn *websocket.Conn, ch chan codexWebsocketRead) {
 	if s.activeCancel != nil {
 		s.activeCancel()
 		s.activeCancel = nil
@@ -108,7 +119,6 @@ func (s *codexWebsocketSession) setActive(conn *websocket.Conn, ch chan codexWeb
 		s.activeDone = activeCtx.Done()
 		s.activeCancel = activeCancel
 	}
-	s.activeMu.Unlock()
 }
 
 func (s *codexWebsocketSession) activate(conn *websocket.Conn) chan codexWebsocketRead {
@@ -116,8 +126,46 @@ func (s *codexWebsocketSession) activate(conn *websocket.Conn) chan codexWebsock
 		return nil
 	}
 	ch := make(chan codexWebsocketRead, 4096)
-	s.setActive(conn, ch)
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	if s.terminalConn == conn && s.terminalErr != nil {
+		ch <- codexWebsocketRead{conn: conn, err: s.terminalErr}
+		close(ch)
+		return ch
+	}
+	s.setActiveLocked(conn, ch)
 	return ch
+}
+
+func (s *codexWebsocketSession) resetTerminalError(conn *websocket.Conn) {
+	if s == nil || conn == nil {
+		return
+	}
+	s.activeMu.Lock()
+	s.terminalConn = conn
+	s.terminalErr = nil
+	if s.responseStateConn != conn {
+		s.responseStateConn = conn
+		s.terminalResponseIDs = make(map[string]struct{})
+	}
+	s.activeMu.Unlock()
+}
+
+func (s *codexWebsocketSession) markTerminalError(conn *websocket.Conn, err error) bool {
+	if s == nil || conn == nil || err == nil {
+		return false
+	}
+	s.connMu.Lock()
+	if s.conn != conn {
+		s.connMu.Unlock()
+		return false
+	}
+	s.activeMu.Lock()
+	s.terminalConn = conn
+	s.terminalErr = err
+	s.activeMu.Unlock()
+	s.connMu.Unlock()
+	return true
 }
 
 func (s *codexWebsocketSession) activeForConn(conn *websocket.Conn) (chan codexWebsocketRead, <-chan struct{}) {
@@ -251,6 +299,7 @@ func (s *codexWebsocketSession) configureConn(conn *websocket.Conn) {
 	if s == nil || conn == nil {
 		return
 	}
+	s.resetTerminalError(conn)
 	s.resetUpstreamDisconnectError(conn)
 	conn.SetPingHandler(func(appData string) error {
 		sessionID := ""
@@ -373,7 +422,7 @@ func closeWebsocketAfterBindFailure(sess *codexWebsocketSession, conn *websocket
 	}
 }
 
-func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string) bool {
+func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) bool {
 	if sess == nil {
 		return false
 	}
@@ -383,19 +432,17 @@ func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, w
 	if strings.TrimSpace(sess.authID) == "" && strings.TrimSpace(sess.wsURL) == "" {
 		return false
 	}
-	return strings.TrimSpace(sess.authID) != strings.TrimSpace(authID) || strings.TrimSpace(sess.wsURL) != strings.TrimSpace(wsURL)
+	return !websocketSessionTargetMatches(sess, authID, wsURL, proxyURL)
 }
 
-func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string) (*websocket.Conn, *websocketConnectionCloser) {
+func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) (*websocket.Conn, *websocketConnectionCloser) {
 	if sess == nil {
 		return nil, nil
 	}
 	sess.connMu.Lock()
 	conn := sess.conn
 	closer := sess.connCloser
-	matches := conn != nil && closer != nil &&
-		strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) &&
-		strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL)
+	matches := conn != nil && closer != nil && websocketSessionTargetMatches(sess, authID, wsURL, proxyURL)
 	sess.connMu.Unlock()
 	if !matches || sess.upstreamDisconnectError(conn) != nil {
 		return nil, nil
@@ -403,7 +450,13 @@ func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, ws
 	return conn, closer
 }
 
-func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
+func websocketSessionTargetMatches(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) bool {
+	return strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) &&
+		strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL) &&
+		strings.TrimSpace(sess.proxyURL) == strings.TrimSpace(proxyURL)
+}
+
+func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
 	if sess == nil {
 		return nil, nil, "", "", nil
 	}
@@ -411,7 +464,7 @@ func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID st
 	sess.connMu.Lock()
 	defer sess.connMu.Unlock()
 	conn := sess.conn
-	if conn == nil || (strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) && strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL)) {
+	if conn == nil || websocketSessionTargetMatches(sess, authID, wsURL, proxyURL) {
 		return nil, nil, "", "", nil
 	}
 
@@ -595,7 +648,8 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 		return conn, closer, resp, err
 	}
 
-	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL); staleConn != nil {
+	proxyURL := executionProxyURL(ctx, e.cfg, auth)
+	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL, proxyURL); staleConn != nil {
 		staleLastEvent := sess.getLastEventType(staleConn)
 		logCodexWebsocketDisconnectedWithLastEvent(sess, sess.sessionID, staleAuthID, staleWSURL, "target_changed", staleLastEvent, nil)
 		if staleCloser != nil {
@@ -646,6 +700,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.multiAgentV2OptimizedConn = nil
 	sess.wsURL = wsURL
 	sess.authID = authID
+	sess.proxyURL = proxyURL
 	sess.readerConn = conn
 	sess.connMu.Unlock()
 
@@ -663,6 +718,7 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 		_ = conn.SetReadDeadline(time.Now().Add(codexResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
 		if errRead != nil {
+			sess.markTerminalError(conn, errRead)
 			invalidate := func() {
 				e.invalidateUpstreamConn(sess, conn, "upstream_disconnected", errRead)
 			}
@@ -683,6 +739,7 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 		if msgType != websocket.TextMessage {
 			if msgType == websocket.BinaryMessage {
 				errBinary := fmt.Errorf("codex websockets executor: unexpected binary message")
+				sess.markTerminalError(conn, errBinary)
 				invalidate := func() {
 					e.invalidateUpstreamConn(sess, conn, "unexpected_binary", errBinary)
 				}
@@ -707,6 +764,16 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 			eventType := gjson.GetBytes(payload, "type").String()
 			if eventType != "" {
 				sess.setLastEventType(conn, eventType)
+			}
+			// Record terminal IDs before delivery: downstream may still be
+			// processing this turn after its active read channel is cleared.
+			responseID := gjson.GetBytes(payload, "response.id")
+			if isTerminalEvent(eventType) && eventType != "error" && responseID.Type == gjson.String && responseID.String() != "" {
+				sess.activeMu.Lock()
+				if sess.responseStateConn == conn {
+					sess.terminalResponseIDs[responseID.String()] = struct{}{}
+				}
+				sess.activeMu.Unlock()
 			}
 		}
 
