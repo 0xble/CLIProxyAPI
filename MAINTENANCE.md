@@ -22,7 +22,7 @@ This fork supplies the local gateway build from fork `main` and tracks upstream 
 
 ### CPA-001 — request-scoped error cooldown duration
 
-- Required behavior: an optional per-rule `cooldown` Go duration string (for example `1h`) on `request-scoped-errors` overrides the transient cooldown for `stop-and-cooldown` and `continue-and-cooldown`; absent `cooldown` preserves the existing behavior. Invalid durations ignore the rule.
+- Required behavior: an optional per-rule `cooldown` Go duration string (for example `1h`) on `request-scoped-errors` sets a minimum cooldown for `stop-and-cooldown` and `continue-and-cooldown` (it replaces the short transient cooldown and never shortens a longer status, provider, or quota deadline); absent `cooldown` preserves the existing behavior. Invalid durations ignore the rule.
 - Source surfaces: `internal/config/config_types.go`, request-scoped rule normalization, `sdk/cliproxy/auth` result/cooldown handling, focused config and selection regressions, and the documented example config.
 - Rationale: allow credential-specific upstream failures such as exhausted credit to remain unavailable for an explicit period while another credential serves requests. The implementation applies the deadline to the matched model's credential state; unrelated models on the same credential retain existing per-model behavior.
 - Upstream source and feedback: closed issue https://github.com/router-for-me/CLIProxyAPI/issues/3858; upstream contribution PR https://github.com/router-for-me/CLIProxyAPI/pull/6496. Checked 2026-10-09; no released upstream implementation.
