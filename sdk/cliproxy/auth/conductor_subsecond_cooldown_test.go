@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 func TestMarkResult_429SubSecondRetryAfter_EnforcesMinimumCooldownFloor(t *testing.T) {
@@ -125,7 +125,7 @@ func TestApplyAuthFailureState_429SubSecondRetryAfter_EnforcesMinimumCooldownFlo
 		Message:    "RESOURCE_EXHAUSTED",
 	}
 
-	applyAuthFailureState(auth, quotaErr, &subSecond, now, false)
+	applyAuthFailureState(auth, quotaErr, &subSecond, 0, now, false)
 
 	if auth.NextRetryAfter.IsZero() {
 		t.Fatal("expected NextRetryAfter to be set")

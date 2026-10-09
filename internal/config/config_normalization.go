@@ -3,8 +3,9 @@ package config
 import (
 	"sort"
 	"strings"
+	"time"
 
-	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
+	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
 )
 
 // NormalizePluginsConfig applies default plugin configuration values.
@@ -102,8 +103,66 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 	cfg.OAuthModelAlias = out
 }
 
+// SanitizeOAuthSettings normalizes and deduplicates global OAuth model settings.
+// It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
+// and ensures entries are unique within each channel.
+func (cfg *Config) SanitizeOAuthSettings() {
+	if cfg == nil || len(cfg.OAuthSettings) == 0 {
+		return
+	}
+	out := make(map[string][]OAuthModelSetting, len(cfg.OAuthSettings))
+	for rawChannel, settings := range cfg.OAuthSettings {
+		channel := strings.ToLower(strings.TrimSpace(rawChannel))
+		if channel == "" || len(settings) == 0 {
+			continue
+		}
+		seen := make(map[string]struct{}, len(settings))
+		reversed := make([]OAuthModelSetting, 0, len(settings))
+		for i := len(settings) - 1; i >= 0; i-- {
+			entry := settings[i]
+			name := strings.TrimSpace(entry.Name)
+			if name == "" {
+				continue
+			}
+			alias := strings.TrimSpace(entry.Alias)
+			key := strings.ToLower(name) + "->" + strings.ToLower(alias)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			reversed = append(reversed, OAuthModelSetting{
+				Name:             name,
+				Alias:            alias,
+				MaxContextLength: entry.MaxContextLength,
+			})
+		}
+		if len(reversed) > 0 {
+			clean := make([]OAuthModelSetting, len(reversed))
+			for i := range reversed {
+				clean[len(reversed)-1-i] = reversed[i]
+			}
+			out[channel] = clean
+		}
+	}
+	cfg.OAuthSettings = out
+}
+
+// ParseRequestScopedErrorCooldown parses an optional positive Go duration.
+// Empty values are valid and preserve the legacy cooldown behavior.
+func ParseRequestScopedErrorCooldown(raw string) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, true
+	}
+	duration, errParse := time.ParseDuration(raw)
+	if errParse != nil || duration <= 0 {
+		return 0, false
+	}
+	return duration, true
+}
+
 // SanitizeOAuthRequestScopedErrors normalizes and validates global OAuth request-scoped error rules.
-// It trims whitespace, normalizes channel keys to lower-case, validates status/action, and drops invalid rules.
+// It trims whitespace, normalizes channel keys to lower-case, validates status/action/cooldown, and drops invalid rules.
 func (cfg *Config) SanitizeOAuthRequestScopedErrors() {
 	if cfg == nil || len(cfg.OAuthRequestScopedErrors) == 0 {
 		return
@@ -117,6 +176,10 @@ func (cfg *Config) SanitizeOAuthRequestScopedErrors() {
 		clean := make([]RequestScopedErrorRule, 0, len(rules))
 		for _, r := range rules {
 			action := strings.ToLower(strings.TrimSpace(r.Action))
+			cooldown := strings.TrimSpace(r.Cooldown)
+			if _, okCooldown := ParseRequestScopedErrorCooldown(cooldown); !okCooldown {
+				continue
+			}
 			match := make([]string, 0, len(r.Match))
 			for _, m := range r.Match {
 				if tm := strings.TrimSpace(m); tm != "" {
@@ -137,6 +200,7 @@ func (cfg *Config) SanitizeOAuthRequestScopedErrors() {
 				Match:       match,
 				MatchRegexr: matchRegexr,
 				Action:      action,
+				Cooldown:    cooldown,
 			})
 		}
 		if len(clean) > 0 {

@@ -2,14 +2,16 @@ package auth
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"golang.org/x/sync/semaphore"
 )
 
 // ProviderExecutor defines the contract required by Manager to execute provider calls.
@@ -28,6 +30,12 @@ type ProviderExecutor interface {
 	// HttpRequest injects provider credentials into the supplied HTTP request and executes it.
 	// Callers must close the response body when non-nil.
 	HttpRequest(ctx context.Context, auth *Auth, req *http.Request) (*http.Response, error)
+}
+
+// APIKeyConfigExecutor provides an execution-local view without OAuth-only
+// configuration. The registered executor and its shared session state stay intact.
+type APIKeyConfigExecutor interface {
+	ForAPIKey() ProviderExecutor
 }
 
 // RequestAuthPreparer lets an executor update missing auth metadata immediately
@@ -56,6 +64,8 @@ type Result struct {
 	Success bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
+	// Cooldown carries an explicit request-scoped cooldown duration.
+	Cooldown time.Duration
 	// CredentialScope indicates that the failure affects the whole credential across models (e.g. Anthropic 5h/7d unified limits).
 	CredentialScope bool
 	// Error describes the failure when Success is false.
@@ -66,6 +76,10 @@ type Result struct {
 	// observed watermark. Count-tokens requests reuse the credential but are not
 	// generation traffic; their response headers are not a generation snapshot.
 	SkipQuotaObservation bool
+	// CredentialVersion captures the credential version under which the request was executed.
+	CredentialVersion uint64
+	// RegistrationEpoch captures the registration epoch under which the request was executed.
+	RegistrationEpoch uint64
 }
 
 // Selector chooses an auth candidate for execution.
@@ -147,8 +161,12 @@ type Manager struct {
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
+	syncSchedulerMu           sync.Mutex
+	structuralEpoch           atomic.Uint64
+	syncedVersion             atomic.Uint64
 	auths                     map[string]*Auth
 	authEpochs                map[string]uint64
+	authChangeWatchers        map[string]map[chan struct{}]struct{}
 	scheduler                 *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
@@ -189,6 +207,8 @@ type Manager struct {
 	// Auto refresh state
 	refreshCancel context.CancelFunc
 	refreshLoop   *authAutoRefreshLoop
+	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
+	refreshJobs map[string]*authRefreshJob
 
 	requestPrepareLocks sync.Map
 	// refreshLocks serializes credential refresh per auth ID so concurrent
@@ -196,6 +216,11 @@ type Manager struct {
 	refreshLocks sync.Map
 	// persistLocks serializes disk persistence per auth ID and guards against out-of-order writes.
 	persistLocks sync.Map
+	// authMutationLocks coordinate credential mutations without blocking unrelated readers.
+	authMutationLocks sync.Map
+	// authLoadGate allows concurrent credential transactions, but excludes whole-store reloads.
+	// Mutations acquire one permit; Load acquires all permits before reading the store.
+	authLoadGate *semaphore.Weighted
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -208,6 +233,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	}
 	manager := &Manager{
 		store:                 store,
+		authLoadGate:          semaphore.NewWeighted(math.MaxInt64),
 		executors:             make(map[string]ProviderExecutor),
 		selector:              selector,
 		hook:                  hook,

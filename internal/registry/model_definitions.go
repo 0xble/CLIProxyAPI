@@ -18,6 +18,8 @@ const (
 	xaiBuiltinVideoModelID             = "grok-imagine-video"
 	xaiBuiltinVideo15ModelID           = "grok-imagine-video-1.5"
 	xaiBuiltinVideo15PreviewID         = "grok-imagine-video-1.5-preview"
+	xaiBuiltinSpeechModelID            = "grok-tts"
+	xaiBuiltinSpeechVoiceModelID       = "grok-voice-tts-1.0"
 )
 
 // staticModelsJSON mirrors the top-level structure of models.json.
@@ -88,6 +90,7 @@ func GetAntigravityModels() []*ModelInfo {
 }
 
 var staticDevinModels = []*ModelInfo{
+	devinBuiltinSWE16SlowModelInfo(),
 	{
 		ID:                  "devin/swe-2",
 		Type:                "devin",
@@ -254,10 +257,10 @@ func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
 	)
 }
 
-// WithXAIBuiltins injects hard-coded xAI image/video model definitions that should
-// not depend on remote models.json updates.
+// WithXAIBuiltins injects hard-coded xAI image, video, and speech model definitions
+// that should not depend on remote models.json updates.
 func WithXAIBuiltins(models []*ModelInfo) []*ModelInfo {
-	return upsertModelInfos(models, xaiBuiltinImageModelInfo(), xaiBuiltinImageQualityModelInfo(), xaiBuiltinImage20ModelInfo(), xaiBuiltinVideoModelInfo(), xaiBuiltinVideo15ModelInfo(), xaiBuiltinVideo15PreviewModelInfo())
+	return upsertModelInfos(models, xaiBuiltinImageModelInfo(), xaiBuiltinImageQualityModelInfo(), xaiBuiltinImage20ModelInfo(), xaiBuiltinVideoModelInfo(), xaiBuiltinVideo15ModelInfo(), xaiBuiltinVideo15PreviewModelInfo(), xaiBuiltinSpeechModelInfo(), xaiBuiltinSpeechVoiceModelInfo())
 }
 
 func normalizeAntigravityCapabilityModelID(modelID string) string {
@@ -406,6 +409,32 @@ func xaiBuiltinVideo15PreviewModelInfo() *ModelInfo {
 	}
 }
 
+func xaiBuiltinSpeechModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          xaiBuiltinSpeechModelID,
+		Object:      "model",
+		Created:     1773619200, // 2026-03-16
+		OwnedBy:     "xai",
+		Type:        "xai",
+		DisplayName: "Grok TTS",
+		Name:        xaiBuiltinSpeechModelID,
+		Description: "xAI Grok unary text-to-speech model.",
+	}
+}
+
+func xaiBuiltinSpeechVoiceModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          xaiBuiltinSpeechVoiceModelID,
+		Object:      "model",
+		Created:     1773619200, // 2026-03-16
+		OwnedBy:     "xai",
+		Type:        "xai",
+		DisplayName: "Grok Voice TTS 1.0",
+		Name:        xaiBuiltinSpeechVoiceModelID,
+		Description: "xAI Grok unary text-to-speech model.",
+	}
+}
+
 func upsertModelInfos(models []*ModelInfo, extras ...*ModelInfo) []*ModelInfo {
 	if len(extras) == 0 {
 		return models
@@ -494,7 +523,7 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAIStudioModels()
 	case "codex":
 		return GetCodexProModels()
-	case "kimi":
+	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		return GetKimiModels()
 	case "antigravity":
 		return GetAntigravityModels()
