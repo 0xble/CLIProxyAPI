@@ -15,6 +15,7 @@ This fork supplies the local gateway build from fork `main` and tracks upstream 
 - Preserve upstream routing, credential refresh ownership, and protocol compatibility unless a separately accepted feature changes them.
 - Keep credentials, account identities, quota snapshots, and live configuration outside this public repository.
 - The dedicated `update-cliproxyapi` Hermes job owns synchronization and the authorized local installation. Other maintenance agents must not race that job.
+- This fork intentionally diverges from upstream by removing the `agents-md-guard`, `auto-retarget-main-pr-to-dev`, and `pr-path-guard` workflows: fork PRs target `main`, while those guards closed or retargeted them. Re-check this divergence on each upstream tag merge.
 - Install only published fork revisions using `cliproxyapi-install <full-sha>`. The installer verifies the active process, binary checksum, and provider inference and restores the previous release on failed activation.
 
 ## Active patches
@@ -32,7 +33,7 @@ This fork supplies the local gateway build from fork `main` and tracks upstream 
 - Retirement condition: remove the fork implementation only after a released upstream version satisfies the complete cooldown regression contract.
 
 No other behavioral patches are implemented or approved.
-Use stable IDs `CPA-002`, and onward for future logical patches.
+Use stable IDs `CPA-002` and onward for future logical patches.
 Upstream maintenance-contract issue/PR associations: none found when checked 2026-09-13.
 Retain this contract while maintaining the fork. Retire behavioral patches only after a released upstream implementation passes their complete regression contract.
 
