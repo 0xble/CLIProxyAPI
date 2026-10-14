@@ -1545,7 +1545,11 @@ func (m *Manager) List() []*Auth {
 	defer m.mu.RUnlock()
 	list := make([]*Auth, 0, len(m.auths))
 	for _, auth := range m.auths {
-		list = append(list, auth.Clone())
+		clone := auth.Clone()
+		if m.quotaGuard != nil {
+			m.quotaGuard.Attach(clone)
+		}
+		list = append(list, clone)
 	}
 	return list
 }

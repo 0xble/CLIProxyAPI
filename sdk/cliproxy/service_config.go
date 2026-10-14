@@ -267,6 +267,12 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 		return false
 	}
 	s.coreManager.SetOAuthModelAlias(commit.cfg.OAuthModelAlias)
+	quotaCfg := commit.cfg.Routing.QuotaGuard
+	if strings.EqualFold(strings.TrimSpace(quotaCfg.Mode), coreauth.QuotaGuardModeOff) || len(quotaCfg.Policies) == 0 {
+		s.coreManager.SetQuotaGuard(nil)
+	} else {
+		s.coreManager.StartQuotaGuard(ctx, coreauth.NewQuotaGuard(quotaCfg))
+	}
 	return true
 }
 

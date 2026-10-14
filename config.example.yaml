@@ -177,6 +177,20 @@ routing:
   # Ignored when routing.session-affinity is false.
   session-affinity-rebind-on: "any"
 
+  # Reset-aware per-account weekly quota guard. Shadow evaluates and logs without changing routing.
+  # quota-guard:
+  #   mode: shadow # off | shadow | active
+  #   poll-interval: "5m"
+  #   max-age: "15m"
+  #   state-file: "~/.local/share/cliproxyapi/quota-guard-state.json"
+  #   policies:
+  #     - id: lpg-claude-weekly
+  #       provider: claude
+  #       auth-file: claude-account.json
+  #       window: seven_day
+  #       max-used-percent: 50
+  #       allow-within-reset: "2h"
+
   # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
   force-model-prefix: false
 

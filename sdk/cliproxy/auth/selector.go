@@ -833,6 +833,9 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
 		return true, blockReasonOther, time.Time{}
 	}
+	if auth.quotaGuard != nil && auth.quotaGuard.IsBlocked(auth, now) {
+		return true, blockReasonOther, time.Time{}
+	}
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 		return true, blockReasonCooldown, auth.Quota.NextRecoverAt
 	}
@@ -980,6 +983,9 @@ func isAuthBlockedByQuotaOrAuthForModel(auth *Auth, model string, now time.Time)
 		return true
 	}
 	if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
+		return true
+	}
+	if auth.quotaGuard != nil && auth.quotaGuard.IsBlocked(auth, now) {
 		return true
 	}
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && (auth.Quota.NextRecoverAt.IsZero() || auth.Quota.NextRecoverAt.After(now)) {

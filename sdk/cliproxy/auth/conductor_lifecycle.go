@@ -111,6 +111,9 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.EnsureIndex()
 	m.mu.Lock()
+	if m.quotaGuard != nil {
+		m.quotaGuard.Attach(auth)
+	}
 	if m.authEpochs == nil {
 		m.authEpochs = make(map[string]uint64)
 	}

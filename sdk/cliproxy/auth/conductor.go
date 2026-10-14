@@ -213,6 +213,10 @@ type Manager struct {
 	// It is initialized in NewManager; never Load() before first Store().
 	runtimeConfig atomic.Value
 
+	// quotaGuard is the in-memory reset-aware usage policy shared by auth clones.
+	quotaGuard       *QuotaGuard
+	quotaGuardCancel context.CancelFunc
+
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 

@@ -105,6 +105,9 @@ type Auth struct {
 	// Runtime carries non-serialisable data used during execution (in-memory only).
 	Runtime any `json:"-"`
 
+	// quotaGuard is the in-memory policy state consulted by credential selection.
+	quotaGuard *QuotaGuard
+
 	// RejectedAccessToken tracks the access token rejected by upstream 401 until a refresh succeeds.
 	RejectedAccessToken string `json:"-"`
 

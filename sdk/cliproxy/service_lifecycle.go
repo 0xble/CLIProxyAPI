@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
@@ -98,6 +99,9 @@ func (s *Service) Run(ctx context.Context) error {
 			includeBaseline: true,
 			auths:           s.coreManager.List(),
 		})
+		if cfg != nil && !strings.EqualFold(strings.TrimSpace(cfg.Routing.QuotaGuard.Mode), coreauth.QuotaGuardModeOff) && len(cfg.Routing.QuotaGuard.Policies) > 0 {
+			s.coreManager.StartQuotaGuard(ctx, coreauth.NewQuotaGuard(cfg.Routing.QuotaGuard))
+		}
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)

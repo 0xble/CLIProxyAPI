@@ -405,6 +405,28 @@ type RoutingConfig struct {
 	//     auth errors (429, 401/402/403, 404/model support, invalid_grant) rebind as normal.
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
+
+	// QuotaGuard applies a reset-aware usage ceiling to selected OAuth credentials.
+	QuotaGuard QuotaGuardConfig `yaml:"quota-guard,omitempty" json:"quota-guard,omitempty"`
+}
+
+// QuotaGuardConfig configures the reset-aware per-account usage guard.
+type QuotaGuardConfig struct {
+	Mode         string             `yaml:"mode,omitempty" json:"mode,omitempty"`
+	PollInterval string             `yaml:"poll-interval,omitempty" json:"poll-interval,omitempty"`
+	MaxAge       string             `yaml:"max-age,omitempty" json:"max-age,omitempty"`
+	StateFile    string             `yaml:"state-file,omitempty" json:"state-file,omitempty"`
+	Policies     []QuotaGuardPolicy `yaml:"policies,omitempty" json:"policies,omitempty"`
+}
+
+// QuotaGuardPolicy identifies a credential and the weekly usage rule applied to it.
+type QuotaGuardPolicy struct {
+	ID               string  `yaml:"id,omitempty" json:"id,omitempty"`
+	Provider         string  `yaml:"provider,omitempty" json:"provider,omitempty"`
+	AuthFile         string  `yaml:"auth-file,omitempty" json:"auth-file,omitempty"`
+	Window           string  `yaml:"window,omitempty" json:"window,omitempty"`
+	MaxUsedPercent   float64 `yaml:"max-used-percent,omitempty" json:"max-used-percent,omitempty"`
+	AllowWithinReset string  `yaml:"allow-within-reset,omitempty" json:"allow-within-reset,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
