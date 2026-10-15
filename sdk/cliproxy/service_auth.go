@@ -2,6 +2,8 @@ package cliproxy
 
 import (
 	"context"
+	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -78,7 +80,7 @@ func (s *Service) emitAuthUpdate(ctx context.Context, update watcher.AuthUpdate)
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if s.watcher != nil && s.watcher.DispatchRuntimeAuthUpdate(update) {
+	if watcher := s.currentWatcher(); watcher != nil && watcher.DispatchRuntimeAuthUpdate(update) {
 		return
 	}
 	if s.authUpdates != nil {
@@ -173,7 +175,8 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			if update.Auth == nil || update.Auth.ID == "" {
 				continue
 			}
-			auth := s.prepareCoreAuthForModelRegistration(registrationCtx, update.Auth)
+			auth, prepared := s.prepareCoreAuthForModelRegistrationWithSupersede(registrationCtx, update.Auth, s.unversionedSnapshotMarkFor(update))
+			s.recordUnversionedSnapshot(update, prepared)
 			if auth == nil {
 				continue
 			}
@@ -206,12 +209,32 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			if id == "" {
 				continue
 			}
-			if existing, ok := s.coreManager.GetByID(id); ok && existing != nil && update.Auth != nil {
-				if isStaleCoreAuth(existing, update.Auth) {
+			if existing, ok := s.coreManager.GetByID(id); ok && existing != nil {
+				if update.Auth != nil && isStaleCoreAuth(existing, update.Auth) {
 					log.Debugf("skipping stale auth delete for %s: incoming gen=%d, existing gen=%d", id, update.Auth.Generation, existing.Generation)
 					continue
 				}
+				// Whole-file deletes can outlive a persisted re-create whose inline
+				// sync did not carry a revision. Recheck local files, including remote
+				// store mirrors, but do not suppress per-ID content/config deletes.
+				if update.Auth == nil && update.IsFileRemoval() {
+					path := existing.Attributes[coreauth.AttributePath]
+					switch existing.AuthSourceKind() {
+					case coreauth.AuthSourceFile:
+						if path == "" {
+							path = existing.Attributes[coreauth.AttributeSource]
+						}
+					case coreauth.AuthSourceGit, coreauth.AuthSourcePostgres, coreauth.AuthSourceObjectStore:
+						// Remote stores are file-backed only when they provide a local path.
+					default:
+						path = ""
+					}
+					if path != "" && s.shouldSkipFileAuthDelete(path, id) {
+						continue
+					}
+				}
 			}
+			delete(s.unversionedSnapshots, id)
 			s.applyCoreAuthRemoval(registrationCtx, id)
 			needsAliasRebuild = true
 		default:
@@ -228,6 +251,49 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 	finishAuthRegistrations(s, startedRegs)
 	registrationsFinished = true
 	waitAuthRegistrations(skippedWaits)
+}
+
+// shouldSkipFileAuthDelete retains re-created IDs and preserves auths on uncertain reads.
+func (s *Service) shouldSkipFileAuthDelete(path, id string) bool {
+	_, errStat := os.Stat(path)
+	if os.IsNotExist(errStat) {
+		return false
+	}
+	if errStat != nil {
+		log.Debugf("skipping auth delete for %s: backing file is not confirmed missing", id)
+		return true
+	}
+	// A file can return with only a subset of its previous plugin auth IDs.
+	// Read just this file so another file with the same ID cannot retain the auth.
+	auths, errSnapshotAuthFile := s.currentWatcher().SnapshotAuthFile(path)
+	if errSnapshotAuthFile != nil || len(auths) == 0 {
+		log.Debugf("skipping auth delete for %s: file auth snapshot is uncertain (err=%v)", id, errSnapshotAuthFile)
+		return true
+	}
+	hasAuth := false
+	for _, auth := range auths {
+		if auth == nil || auth.ID == "" {
+			continue
+		}
+		hasAuth = true
+		// Store IDs retain case, but the file synthesizer lowercases IDs on Windows.
+		// Other platforms keep exact matching for case-sensitive plugin auth IDs.
+		if authIDMatches(auth.ID, id, runtime.GOOS == "windows") {
+			log.Debugf("skipping auth delete for %s: auth ID is present in the re-created file", id)
+			return true
+		}
+	}
+	if !hasAuth {
+		log.Debugf("skipping auth delete for %s: file auth snapshot has no valid IDs", id)
+	}
+	return !hasAuth
+}
+
+func authIDMatches(snapshotID, id string, foldCase bool) bool {
+	if foldCase {
+		return strings.EqualFold(snapshotID, id)
+	}
+	return snapshotID == id
 }
 
 func coalesceAuthUpdates(updates []watcher.AuthUpdate) []watcher.AuthUpdate {
@@ -349,8 +415,37 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 }
 
 func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth *coreauth.Auth) *coreauth.Auth {
+	prepared, _ := s.prepareCoreAuthForModelRegistrationWithSupersede(ctx, auth, nil)
+	return prepared
+}
+
+// unversionedSnapshotMark records an unversioned (Generation 0) file snapshot
+// applied by the watcher consumer: its watcher revision, the manager generation
+// it replaced, and the generation it produced.
+type unversionedSnapshotMark struct {
+	revision       uint64
+	baseGeneration uint64
+	generation     uint64
+}
+
+// prepareResult reports what prepareCoreAuthForModelRegistrationWithSupersede
+// did to the manager. applied is false when the update was rejected as stale.
+type prepareResult struct {
+	applied        bool
+	baseGeneration uint64
+	generation     uint64
+}
+
+// prepareCoreAuthForModelRegistrationWithSupersede is prepareCoreAuthForModelRegistration
+// with an optional unversioned-snapshot mark. A versioned update older than the
+// manager state is normally stale. It is still applied when the only newer
+// manager write is that unversioned snapshot (generation unchanged since it was
+// applied) and the update is at least as new as the state the snapshot replaced:
+// the snapshot was read from disk before this persisted write landed, so the
+// versioned update carries the newer content (upstream #6559 race).
+func (s *Service) prepareCoreAuthForModelRegistrationWithSupersede(ctx context.Context, auth *coreauth.Auth, mark *unversionedSnapshotMark) (*coreauth.Auth, prepareResult) {
 	if s == nil || s.coreManager == nil || auth == nil || auth.ID == "" {
-		return nil
+		return nil, prepareResult{}
 	}
 	auth = auth.Clone()
 	s.ensureExecutorsForAuthWithContext(ctx, auth, false)
@@ -360,11 +455,14 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 	// immediately for API calls, rather than waiting for model registration to complete.
 	op := "register"
 	var err error
+	var updated *coreauth.Auth
+	result := prepareResult{}
 	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
-		if isStaleCoreAuth(existing, auth) {
+		if isStaleCoreAuth(existing, auth) && !supersedesUnversionedSnapshot(existing, auth, mark) {
 			log.Debugf("skipping stale auth update for %s: incoming gen=%d, existing gen=%d", auth.ID, auth.Generation, existing.Generation)
-			return existing
+			return existing, prepareResult{}
 		}
+		result.baseGeneration = existing.Generation
 		auth.CreatedAt = existing.CreatedAt
 		if existing.Metadata != nil {
 			if persistedHints, hasHints := existing.Metadata[antigravityPersistedHintsMetaKey]; hasHints {
@@ -382,21 +480,88 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 			}
 		}
 		op = "update"
-		_, err = s.coreManager.Update(ctx, auth)
+		updated, err = s.coreManager.Update(ctx, auth)
 	} else {
-		_, err = s.coreManager.Register(ctx, auth)
+		updated, err = s.coreManager.Register(ctx, auth)
 	}
 	if err != nil {
 		log.Errorf("failed to %s auth %s: %v", op, auth.ID, err)
 		current, ok := s.coreManager.GetByID(auth.ID)
 		if !ok || current.Disabled {
 			GlobalModelRegistry().UnregisterClient(auth.ID)
-			return nil
+			return nil, prepareResult{}
 		}
 		auth = current
+	} else if updated != nil {
+		result.applied = true
+		result.generation = updated.Generation
 	}
 	s.cancelStaleAntigravityProbes(auth.ID)
-	return auth
+	return auth, result
+}
+
+// supersedesUnversionedSnapshot reports whether a versioned incoming auth may
+// replace manager state that only differs from it by a later unversioned file
+// snapshot. Any other manager write since the snapshot (persisted update,
+// request result) changes the generation and keeps the stale rejection.
+func supersedesUnversionedSnapshot(existing, incoming *coreauth.Auth, mark *unversionedSnapshotMark) bool {
+	if existing == nil || incoming == nil || mark == nil {
+		return false
+	}
+	if incoming.Generation == 0 || existing.Generation != mark.generation {
+		return false
+	}
+	if incoming.RegistrationEpoch > 0 && incoming.RegistrationEpoch < existing.RegistrationEpoch {
+		return false
+	}
+	return incoming.Generation >= mark.baseGeneration
+}
+
+func isUnversionedAuthSnapshot(auth *coreauth.Auth) bool {
+	return auth != nil && auth.Generation == 0 && auth.RegistrationEpoch == 0
+}
+
+// unversionedSnapshotMarkFor returns the last applied unversioned snapshot mark
+// for a versioned update dispatched by the watcher after that snapshot. Watcher
+// revisions are stamped in observation order, so a higher revision means the
+// versioned (persisted) update was dispatched after the snapshot was taken and
+// is the newer state. Unrevisioned or older updates get no mark and keep the
+// normal stale-generation check. Caller holds authUpdateMu.
+func (s *Service) unversionedSnapshotMarkFor(update watcher.AuthUpdate) *unversionedSnapshotMark {
+	if s == nil || update.Auth == nil || isUnversionedAuthSnapshot(update.Auth) {
+		return nil
+	}
+	rev := update.Revision()
+	if rev == 0 {
+		return nil
+	}
+	mark, ok := s.unversionedSnapshots[update.Auth.ID]
+	if !ok || rev <= mark.revision {
+		return nil
+	}
+	return &mark
+}
+
+// recordUnversionedSnapshot remembers an applied unversioned file snapshot and
+// forgets the mark once any versioned update is applied. Caller holds authUpdateMu.
+func (s *Service) recordUnversionedSnapshot(update watcher.AuthUpdate, prepared prepareResult) {
+	if s == nil || update.Auth == nil || !prepared.applied {
+		return
+	}
+	id := update.Auth.ID
+	rev := update.Revision()
+	if !isUnversionedAuthSnapshot(update.Auth) || rev == 0 {
+		delete(s.unversionedSnapshots, id)
+		return
+	}
+	if s.unversionedSnapshots == nil {
+		s.unversionedSnapshots = make(map[string]unversionedSnapshotMark)
+	}
+	s.unversionedSnapshots[id] = unversionedSnapshotMark{
+		revision:       rev,
+		baseGeneration: prepared.baseGeneration,
+		generation:     prepared.generation,
+	}
 }
 
 type authRegistrationWait struct {

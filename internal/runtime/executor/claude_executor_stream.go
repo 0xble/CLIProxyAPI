@@ -235,12 +235,16 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// User rules match the fully prepared business body and are applied only once.
 	var touchedPayloadPaths map[string]bool
 	bodyForUpstream, touchedPayloadPaths = helps.ApplyPayloadConfigWithTrackedPaths(
-		e.cfg, baseModel, to.String(), from.String(), "", bodyForUpstream, originalTranslated,
+		e.cfg, baseModel, to.String(), from.String(), "", bodyForUpstream, stripTranslatedDefaultMaxTokens(from, originalPayload, originalTranslated),
 		helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers,
-		"diagnostics",
+		"diagnostics", "thinking",
 	)
 	if touchedPayloadPaths["diagnostics"] {
 		diagnosticsState = claudeDiagnosticsRequestState{}
+	}
+	if !touchedPayloadPaths["thinking"] {
+		// CPA-005: payload rules may lower max_tokens after thinking was applied.
+		bodyForUpstream = helps.EnforceClaudeThinkingBudgetBelowMaxTokens(bodyForUpstream, claudeThinkingModelInfo(req, baseModel))
 	}
 	extraBetas, bodyForUpstream = extractAndRemoveBetas(bodyForUpstream)
 	bodyForUpstream = stripPromptCacheOptions(bodyForUpstream)
