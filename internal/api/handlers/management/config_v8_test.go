@@ -892,3 +892,25 @@ api-keys:
 		t.Fatalf("unexpected loaded headers: %+v", loaded.OpenAICompatibility[0].Headers)
 	}
 }
+
+func TestRedactReadOnlyYAMLNode(t *testing.T) {
+	var doc yaml.Node
+	raw := "api-keys: [CANARYSECRET]\nclaude-api-key: [{api-key: PROVIDERSECRET}]\nremote-management: {secret-key: MANAGEMENTSECRET}\nrouting: {strategy: weighted-round-robin}\n"
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatal(err)
+	}
+	redactReadOnlyYAMLNode(doc.Content[0])
+	encoded, err := yaml.Marshal(&doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, secret := range []string{"CANARYSECRET", "PROVIDERSECRET", "MANAGEMENTSECRET"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("redacted YAML contains %q: %s", secret, text)
+		}
+	}
+	if !strings.Contains(text, "weighted-round-robin") {
+		t.Fatalf("redacted YAML lost safe metadata: %s", text)
+	}
+}

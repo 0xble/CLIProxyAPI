@@ -57,6 +57,9 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	yamlRequest := strings.HasSuffix(c.FullPath(), "/config.yaml")
 	if c.Request.Method == http.MethodGet {
 		config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
+		if h.cfg.RemoteManagement.ReadOnly {
+			redactReadOnlyYAMLNode(root)
+		}
 		if !yamlRequest {
 			if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
 				for _, server := range servers.Content {
@@ -211,6 +214,28 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	snapshot := h.reloadSnapshotConfigLocked()
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "config-version": 8})
+}
+
+func redactReadOnlyYAMLNode(node *yaml.Node) {
+	if node == nil {
+		return
+	}
+	if node.Kind == yaml.MappingNode {
+		for index := 0; index+1 < len(node.Content); {
+			key, value := node.Content[index], node.Content[index+1]
+			switch strings.ToLower(key.Value) {
+			case "api-key", "api-keys", "secret-key", "password", "token":
+				node.Content = append(node.Content[:index], node.Content[index+2:]...)
+				continue
+			}
+			redactReadOnlyYAMLNode(value)
+			index += 2
+		}
+		return
+	}
+	for _, child := range node.Content {
+		redactReadOnlyYAMLNode(child)
+	}
 }
 
 // configV8ETag renders a config source hash as a strong ETag.
