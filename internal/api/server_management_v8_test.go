@@ -61,6 +61,25 @@ func TestManagementV8RoutesShareAccessControl(t *testing.T) {
 	}
 }
 
+func TestReadOnlyManagementPath(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"/v0/management/auth-files", true},
+		{"/v0/management/config", true},
+		{"/v8/management/credentials", true},
+		{"/v8/management/config", true},
+		{"/v8/management/config.yaml", true},
+		{"/v0/management/plugins", false},
+		{"/v8/management/oauth/callback", false},
+	} {
+		if got := readOnlyManagementPath(tc.path); got != tc.want {
+			t.Errorf("readOnlyManagementPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestManagementV8IndependentContract(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	raw := "port: 8317\nrequest-retry: 3\ndebug: false\napi-keys: [client]\nremote-management: {secret-key: test-password}\n"
