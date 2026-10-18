@@ -86,3 +86,32 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 		}
 	})
 }
+
+func TestMiddlewareReadOnlyRejectsNonGET(t *testing.T) {
+	h := &Handler{
+		cfg:            &config.Config{RemoteManagement: config.RemoteManagement{ReadOnly: true}},
+		failedAttempts: make(map[string]*attemptInfo),
+		envSecret:      "test-secret",
+	}
+	middleware := h.Middleware()
+	engine := gin.New()
+	engine.POST("/v0/management/config", middleware, func(c *gin.Context) { c.Status(http.StatusOK) })
+	engine.GET("/v0/management/config", middleware, func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	for _, tc := range []struct {
+		method string
+		want   int
+	}{
+		{http.MethodPost, http.StatusMethodNotAllowed},
+		{http.MethodGet, http.StatusOK},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, "/v0/management/config", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("X-Management-Key", "test-secret")
+		engine.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("%s status = %d, want %d", tc.method, rec.Code, tc.want)
+		}
+	}
+}

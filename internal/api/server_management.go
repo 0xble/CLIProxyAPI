@@ -22,11 +22,11 @@ func (s *Server) registerManagementRoutes() {
 	log.Info("management routes registered after secret key configuration")
 
 	s.registerManagementV8Routes()
-	s.engine.POST("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
-	s.engine.GET("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
+	s.engine.POST("/v0/management/oauth-callback", s.managementReadOnlyMiddleware(), s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
+	s.engine.GET("/v0/management/oauth-callback", s.managementReadOnlyMiddleware(), s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
 
 	mgmt := s.engine.Group("/v0/management")
-	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	mgmt.Use(s.managementReadOnlyMiddleware(), s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
@@ -198,6 +198,27 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/meta-auth-url", s.mgmt.RequestMetaToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
+	}
+}
+
+func (s *Server) managementReadOnlyMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cfg := s.getConfig()
+		if cfg != nil && cfg.RemoteManagement.ReadOnly && (c.Request == nil || c.Request.Method != http.MethodGet || !readOnlyManagementPath(c.Request.URL.Path)) {
+			c.AbortWithStatus(http.StatusMethodNotAllowed)
+			return
+		}
+		c.Next()
+	}
+}
+
+func readOnlyManagementPath(path string) bool {
+	switch path {
+	case "/v0/management/auth-files", "/v0/management/config",
+		"/v8/management/credentials", "/v8/management/config", "/v8/management/config.yaml":
+		return true
+	default:
+		return false
 	}
 }
 
