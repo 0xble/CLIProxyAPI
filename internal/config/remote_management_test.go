@@ -17,3 +17,13 @@ func TestParseConfigBytesRemoteManagementBaseURL(t *testing.T) {
 		t.Fatalf("RemoteManagement.BaseURL = %q, want https://proxy.example.com", cfg.RemoteManagement.BaseURL)
 	}
 }
+
+func TestParseConfigBytesRemoteManagementReadOnly(t *testing.T) {
+	cfg, errParse := ParseConfigBytes([]byte("remote-management:\n  read-only: true\n"))
+	if errParse != nil {
+		t.Fatalf("ParseConfigBytes() error = %v", errParse)
+	}
+	if !cfg.RemoteManagement.ReadOnly {
+		t.Fatal("RemoteManagement.ReadOnly = false, want true")
+	}
+}

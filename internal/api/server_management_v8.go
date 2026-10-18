@@ -11,8 +11,8 @@ import (
 // Configuration paths mirror the v8 YAML tree; operational routes use its groups.
 func (s *Server) registerManagementV8Routes() {
 	const prefix = "/v8/management"
-	s.engine.GET(prefix+"/oauth/callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
-	s.engine.POST(prefix+"/oauth/callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
+	s.engine.GET(prefix+"/oauth/callback", s.managementReadOnlyMiddleware(), s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
+	s.engine.POST(prefix+"/oauth/callback", s.managementReadOnlyMiddleware(), s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
 
 	v8 := s.engine.Group(prefix)
 	v8.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), func(c *gin.Context) {
