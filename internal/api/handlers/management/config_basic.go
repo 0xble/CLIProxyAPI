@@ -28,7 +28,38 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		c.JSON(200, gin.H{})
 		return
 	}
-	c.JSON(200, new(*h.cfg))
+	h.mu.Lock()
+	readOnly := h.cfg.RemoteManagement.ReadOnly
+	cfg := new(*h.cfg)
+	h.mu.Unlock()
+	if readOnly {
+		var payload any
+		encoded, _ := json.Marshal(cfg)
+		if json.Unmarshal(encoded, &payload) == nil {
+			c.JSON(http.StatusOK, redactReadOnlyConfig(payload))
+			return
+		}
+	}
+	c.JSON(200, cfg)
+}
+
+func redactReadOnlyConfig(value any) any {
+	switch item := value.(type) {
+	case map[string]any:
+		for key := range item {
+			switch strings.ToLower(key) {
+			case "api-key", "api-keys", "secret-key", "password", "token":
+				delete(item, key)
+			default:
+				item[key] = redactReadOnlyConfig(item[key])
+			}
+		}
+	case []any:
+		for index := range item {
+			item[index] = redactReadOnlyConfig(item[index])
+		}
+	}
+	return value
 }
 
 type releaseInfo struct {
@@ -191,6 +222,17 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
 		return
+	}
+	h.mu.Lock()
+	readOnly := h.cfg != nil && h.cfg.RemoteManagement.ReadOnly
+	h.mu.Unlock()
+	if readOnly {
+		var payload any
+		if yaml.Unmarshal(data, &payload) == nil {
+			if sanitized, errMarshal := yaml.Marshal(redactReadOnlyConfig(payload)); errMarshal == nil {
+				data = sanitized
+			}
+		}
 	}
 	c.Header("Content-Type", "application/yaml; charset=utf-8")
 	c.Header("Cache-Control", "no-store")

@@ -1,6 +1,7 @@
 package management
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,6 +86,28 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 			t.Fatalf("X-CPA-SUPPORT-PLUGIN = %q, want %q", got, pluginhost.SupportPluginHeaderValue())
 		}
 	})
+}
+
+func TestRedactReadOnlyConfig(t *testing.T) {
+	payload := redactReadOnlyConfig(map[string]any{
+		"routing":           map[string]any{"strategy": "weighted-round-robin"},
+		"api-keys":          []any{"canary"},
+		"claude-api-key":    []any{map[string]any{"api-key": "provider-secret", "priority": 10}},
+		"remote-management": map[string]any{"secret-key": "management-secret", "read-only": true},
+	})
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, secret := range []string{"canary", "provider-secret", "management-secret"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("redacted config contains %q: %s", secret, text)
+		}
+	}
+	if !strings.Contains(text, "weighted-round-robin") || !strings.Contains(text, "read-only") {
+		t.Fatalf("redacted config lost safe metadata: %s", text)
+	}
 }
 
 func TestMiddlewareReadOnlyRejectsNonGET(t *testing.T) {
