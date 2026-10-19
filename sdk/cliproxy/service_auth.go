@@ -485,7 +485,7 @@ func (s *Service) prepareCoreAuthForModelRegistrationWithSupersede(ctx context.C
 		if err == nil && updated != nil {
 			if updated.Generation == existing.Generation {
 				log.Debugf("skipping stale auth update for %s: incoming snapshot did not advance generation (gen=%d)", auth.ID, existing.Generation)
-				return updated
+				return updated, result
 			}
 			auth = updated
 		}
