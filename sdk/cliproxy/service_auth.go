@@ -491,10 +491,9 @@ func (s *Service) prepareCoreAuthForModelRegistrationWithSupersede(ctx context.C
 			auth = updated
 		}
 	} else {
-		var registered *coreauth.Auth
-		registered, err = s.coreManager.Register(ctx, auth)
-		if err == nil && registered != nil {
-			auth = registered
+		updated, err = s.coreManager.Register(ctx, auth)
+		if err == nil && updated != nil {
+			auth = updated
 		}
 	}
 	if err != nil {

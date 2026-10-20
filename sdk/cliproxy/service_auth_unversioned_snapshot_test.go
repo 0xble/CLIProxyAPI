@@ -140,6 +140,30 @@ func TestHandleAuthUpdates_RejectedFileSnapshotKeepsSupersedeMark(t *testing.T) 
 	}
 }
 
+func TestHandleAuthUpdates_RegisteredUnversionedSnapshotRecordsMark(t *testing.T) {
+	authID := "codex-unversioned-register"
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(authID) })
+	manager := coreauth.NewManager(nil, nil, nil)
+	service := &Service{cfg: &config.Config{}, coreManager: manager}
+
+	snapshot := &coreauth.Auth{ID: authID, Provider: "codex", Status: coreauth.StatusActive, Prefix: "file"}
+	update := watcher.AuthUpdate{Action: watcher.AuthUpdateActionAdd, ID: authID, Auth: snapshot}
+	update.SetRevision(3)
+	service.handleAuthUpdate(context.Background(), update)
+
+	registered, ok := manager.GetByID(authID)
+	if !ok || registered == nil {
+		t.Fatal("expected unversioned snapshot to register")
+	}
+	mark, ok := service.unversionedSnapshots[authID]
+	if !ok {
+		t.Fatal("expected registration of an unversioned snapshot to record a supersede mark")
+	}
+	if mark.revision != 3 || mark.generation != registered.Generation {
+		t.Fatalf("mark = %+v, want revision 3 and generation %d", mark, registered.Generation)
+	}
+}
+
 func authPrefix(auth *coreauth.Auth) string {
 	if auth == nil {
 		return "<nil>"
