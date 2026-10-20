@@ -482,6 +482,12 @@ func (s *Service) prepareCoreAuthForModelRegistrationWithSupersede(ctx context.C
 		op = "update"
 		updated, err = s.coreManager.Update(ctx, auth)
 		if err == nil && updated != nil {
+			if updated.Generation == existing.Generation {
+				// The manager kept its current state (for example a file
+				// snapshot that no longer matches disk), so nothing was applied.
+				log.Debugf("skipping stale auth update for %s: incoming snapshot did not advance generation (gen=%d)", auth.ID, existing.Generation)
+				return updated, prepareResult{}
+			}
 			auth = updated
 		}
 	} else {

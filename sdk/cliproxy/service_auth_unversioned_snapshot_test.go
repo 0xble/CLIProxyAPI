@@ -2,6 +2,8 @@ package cliproxy
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
@@ -105,6 +107,36 @@ func TestHandleAuthUpdates_UnrevisionedVersionedUpdateDoesNotSupersede(t *testin
 
 	if got, _ := manager.GetByID(authID); got == nil || got.Prefix != "old" {
 		t.Fatalf("expected unrevisioned versioned update to stay stale, got prefix %q", authPrefix(got))
+	}
+}
+
+func TestHandleAuthUpdates_RejectedFileSnapshotKeepsSupersedeMark(t *testing.T) {
+	authID := "codex-unversioned-rejected-snapshot"
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(authID) })
+	service, manager, persisted := unversionedSnapshotFixture(t, authID)
+
+	// A file snapshot whose bytes no longer match disk is rejected by the
+	// manager without advancing the generation. It must not replace the mark
+	// left by the snapshot that was actually applied.
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if errWrite := os.WriteFile(path, []byte(`{"prefix":"disk"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+	staleSnapshot := &coreauth.Auth{ID: authID, Provider: "codex", Status: coreauth.StatusActive, Prefix: "stale"}
+	staleSnapshot.BindFileSnapshot(path, []byte(`{"prefix":"stale"}`))
+	rejected := watcher.AuthUpdate{Action: watcher.AuthUpdateActionModify, ID: authID, Auth: staleSnapshot}
+	rejected.SetRevision(6)
+	service.handleAuthUpdate(context.Background(), rejected)
+	if got, _ := manager.GetByID(authID); got == nil || got.Prefix != "old" {
+		t.Fatalf("expected mismatched file snapshot to be rejected, got prefix %q", authPrefix(got))
+	}
+
+	versioned := watcher.AuthUpdate{Action: watcher.AuthUpdateActionModify, ID: authID, Auth: persisted}
+	versioned.SetRevision(7)
+	service.handleAuthUpdate(context.Background(), versioned)
+
+	if got, _ := manager.GetByID(authID); got == nil || got.Prefix != "new" {
+		t.Fatalf("expected persisted update to supersede the applied file snapshot, got prefix %q", authPrefix(got))
 	}
 }
 
