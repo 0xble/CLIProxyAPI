@@ -221,7 +221,8 @@ func TestCodexManagerRefresh_UnauthorizedRefreshesRejectedPartition(t *testing.T
 	for _, useSIWC := range []bool{true, false} {
 		for _, inactiveDue := range []bool{true, false} {
 			t.Run(fmt.Sprintf("use_siwc=%v/inactive_due=%v", useSIWC, inactiveDue), func(t *testing.T) {
-				outerExp := time.Now().Add(48 * time.Hour)
+				// Keep the inactive outer token outside the proactive refresh lead.
+				outerExp := time.Now().Add(cliproxyauth.CodexOuterRefreshLead + 48*time.Hour)
 				siwcExp := time.Now().Add(time.Hour)
 				rejected, replacement := "fixture-old-outer-access", "fixture-new-outer-access"
 				if useSIWC {

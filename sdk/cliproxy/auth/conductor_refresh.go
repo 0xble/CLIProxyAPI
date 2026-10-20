@@ -177,7 +177,7 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 		return false
 	}
 	if hasExpiry && !expiry.IsZero() {
-		return time.Until(expiry) <= *lead
+		return expiry.Sub(now) <= *lead
 	}
 	if !lastRefresh.IsZero() {
 		return now.Sub(lastRefresh) >= *lead
@@ -794,17 +794,15 @@ func (m *Manager) markRejectedAccessToken(id, failedAccessToken string) {
 	releaseMutation := m.lockAuthMutation(id)
 	defer releaseMutation()
 	m.mu.Lock()
-	if current := m.auths[id]; current != nil && authAccessToken(current) == failedAccessToken {
-		// Codex refresh scheduling is partition-aware: rejection makes the
-		// active partition due even when its advertised expiry is still valid.
-		if _, hasExp := current.AccessTokenExpirationTime(); !hasExp || strings.EqualFold(strings.TrimSpace(current.Provider), "codex") {
-			current.Generation++
-			current.UpdatedAt = time.Now()
-			current.RejectedAccessToken = failedAccessToken
-			m.auths[id] = current
-			if m.scheduler != nil {
-				m.scheduler.upsertAuth(current.Clone())
-			}
+	// Rejection makes the active credential due even when its advertised
+	// expiry is still valid, which keeps Codex partition recovery (CPA-003).
+	if current := m.auths[id]; current != nil && authAccessToken(current) == failedAccessToken && current.RejectedAccessToken != failedAccessToken {
+		current.Generation++
+		current.UpdatedAt = time.Now()
+		current.RejectedAccessToken = failedAccessToken
+		m.auths[id] = current
+		if m.scheduler != nil {
+			m.scheduler.upsertAuth(current.Clone())
 		}
 	}
 	m.mu.Unlock()
