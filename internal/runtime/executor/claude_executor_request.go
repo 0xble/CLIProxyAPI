@@ -386,21 +386,29 @@ func claudeBodyHasSignedThinkingBlock(body []byte) bool {
 // thinking blocks, default thinking.block_binding.prefix_mismatch_behavior to
 // drop_block so a prefix mismatch (client reconnect resending history, a
 // changed tools list, reconstructed server-tool blocks) drops the bound
-// blocks instead of failing the whole request with a 400. A caller-supplied
-// behavior always wins, and injection requires an explicit thinking.type so
-// a bare thinking.block_binding object is never synthesized on thinking-less
-// requests. This must run before user payload rules, which stay the final
-// semantic barrier and may override or filter the injected value.
+// blocks instead of failing the whole request with a 400. On preserved-thinking
+// models, an omitted thinking field runs adaptive thinking and is equivalent to
+// {"type":"adaptive"}, so synthesize that adaptive thinking object unless
+// tool_choice forces tool use. A thinking object without a type and any
+// caller-supplied prefix_mismatch_behavior stay untouched. This must run before
+// user payload rules, which stay the final semantic barrier and may override or
+// filter the injected value.
 func applyClaudePreservedThinkingBinding(body []byte) []byte {
 	model := gjson.GetBytes(body, "model").String()
-	if len(body) == 0 || !isClaudePreservedThinkingModel(model) {
+	if len(body) == 0 || !isClaudePreservedThinkingModel(model) || claudeToolChoiceForcesToolUse(body) {
 		return body
 	}
-	if !claudeThinkingTypeAcceptsBlockBinding(model, gjson.GetBytes(body, "thinking.type").String()) || gjson.GetBytes(body, "thinking.block_binding.prefix_mismatch_behavior").Exists() {
-		return body
+	thinking := gjson.GetBytes(body, "thinking")
+	if thinking.Exists() {
+		if !claudeThinkingTypeAcceptsBlockBinding(model, thinking.Get("type").String()) || thinking.Get("block_binding.prefix_mismatch_behavior").Exists() {
+			return body
+		}
 	}
 	if !claudeBodyHasSignedThinkingBlock(body) {
 		return body
+	}
+	if !thinking.Exists() {
+		body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
 	}
 	body, _ = sjson.SetBytes(body, "thinking.block_binding.prefix_mismatch_behavior", "drop_block")
 	return body
@@ -806,7 +814,7 @@ func classifyClaudeUpstreamError(statusCode int, headers http.Header, body []byt
 func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) error {
 	var retryAfter *time.Duration
 	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 600) {
-		retryAfter = helps.ParseClaudeRateLimitReset(headers, time.Now())
+		retryAfter = helps.ParseClaudeRateLimitResetForError(headers, body, time.Now())
 	}
 	err := statusErr{code: statusCode, msg: string(body), retryAfter: retryAfter}
 	if statusCode == http.StatusTooManyRequests {
@@ -893,13 +901,17 @@ func extractAndRemoveBetas(body []byte) ([]string, []byte) {
 	return betas, body
 }
 
+func claudeToolChoiceForcesToolUse(body []byte) bool {
+	toolChoiceType := gjson.GetBytes(body, "tool_choice.type").String()
+	return toolChoiceType == "any" || toolChoiceType == "tool"
+}
+
 // disableThinkingIfToolChoiceForced checks if tool_choice forces tool use and disables thinking.
 // Anthropic API does not allow thinking when tool_choice is set to "any" or a specific tool.
 // See: https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#important-considerations
 func disableThinkingIfToolChoiceForced(body []byte) []byte {
-	toolChoiceType := gjson.GetBytes(body, "tool_choice.type").String()
 	// "auto" is allowed with thinking, but "any" or "tool" (specific tool) are not
-	if toolChoiceType == "any" || toolChoiceType == "tool" {
+	if claudeToolChoiceForcesToolUse(body) {
 		// Remove thinking configuration entirely to avoid API error
 		body, _ = sjson.DeleteBytes(body, "thinking")
 		// Adaptive thinking may also set output_config.effort; remove it to avoid
@@ -1132,7 +1144,7 @@ func claudeCredentialUsesOAuth(auth *cliproxyauth.Auth, apiKey string) bool {
 	return !hasAPIKeyAttr
 }
 
-func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCode bool) {
+func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCode, uncloak bool) {
 	if dst == nil || src == nil {
 		return
 	}
@@ -1150,6 +1162,21 @@ func copyClaudeCallerFingerprintHeaders(dst, src http.Header, confirmedClaudeCod
 		}
 		if !confirmedClaudeCode && (strings.HasPrefix(lowerName, "x-claude-code-") || strings.HasPrefix(lowerName, "x-claude-remote-")) {
 			continue
+		}
+		if uncloak {
+			if lowerName == "x-app" ||
+				lowerName == "x-client-request-id" ||
+				lowerName == "x-client-app" ||
+				lowerName == "x-anthropic-additional-protection" ||
+				lowerName == "anthropic-dangerous-direct-browser-access" ||
+				strings.HasPrefix(lowerName, "x-stainless-") ||
+				strings.HasPrefix(lowerName, "x-claude-code-") ||
+				strings.HasPrefix(lowerName, "x-claude-remote-") {
+				continue
+			}
+			if lowerName == "user-agent" && len(values) > 0 && helps.IsClaudeCodeUserAgent(values[0]) {
+				continue
+			}
 		}
 		dst.Del(name)
 		for _, value := range values {
@@ -1209,6 +1236,11 @@ func applyClaudeHeadersWithNativeProfile(
 	useAPIKey := !credentialUsesBearer
 	fp := resolveClaudeFingerprintPolicy(cfg, auth, apiKey)
 	wirePolicy, _ := resolveClaudeWirePolicy(cfg, auth, apiKey, confirmedClaudeCode)
+	if wirePolicy.Uncloak {
+		confirmedClaudeCode = false
+		helperProfile = false
+		sessionIDs = nil
+	}
 	applyCLIFingerprint := fp.ProfileClaudeCodeCLI || wirePolicy.Cloak
 	preserveCallerFingerprint := !applyCLIFingerprint && !confirmedClaudeCode
 	useOAuthBetas := fp.UseOAuthBetas
@@ -1344,6 +1376,21 @@ func applyClaudeHeadersWithNativeProfile(
 		}
 	}
 	applyBetaHeader := func() {
+		if wirePolicy.Uncloak {
+			baseBetas = withoutClaudeBeta(baseBetas, claudeCodeBeta)
+			baseBetas = withoutClaudeBeta(baseBetas, claudeOAuthBeta)
+			baseBetas = withoutClaudeBeta(baseBetas, claudeRedactThinkingBeta)
+			baseBetas = withoutClaudeBeta(baseBetas, claudeAFKModeBeta)
+			if !gjson.GetBytes(body, "diagnostics").Exists() {
+				baseBetas = withoutClaudeBeta(baseBetas, claudeCacheDiagnosisBeta)
+			}
+			if !gjson.GetBytes(body, "fallback_credit_token").Exists() {
+				baseBetas = withoutClaudeBeta(baseBetas, claudeFallbackCreditBeta)
+			}
+			if !helps.ClaudePayloadHas1hTTL(body) {
+				baseBetas = withoutClaudeBeta(baseBetas, claudeExtendedCacheTTLBeta)
+			}
+		}
 		// Enforce strict native Claude Code 2.1.280 model & turn beta gating:
 		if !claudeRequestSupportsEffort(body, nil) {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeEffortBeta)
@@ -1400,7 +1447,7 @@ func applyClaudeHeadersWithNativeProfile(
 			defaultAccept = "text/event-stream"
 			defaultAcceptEncoding = "identity"
 		}
-		copyClaudeCallerFingerprintHeaders(r.Header, incomingHeaders, confirmedClaudeCode)
+		copyClaudeCallerFingerprintHeaders(r.Header, incomingHeaders, confirmedClaudeCode, wirePolicy.Uncloak)
 		if hd.ClientRequestID == config.ClaudeClientRequestIDOff {
 			r.Header.Del("X-Client-Request-Id")
 		}
@@ -1411,7 +1458,11 @@ func applyClaudeHeadersWithNativeProfile(
 		// sent none must not fall through to Go's transport default
 		// ("Go-http-client/1.1"), which upstreams read as a bot signature. Identify
 		// as CPA instead: honest about the hop, and not a fabricated client.
-		misc.EnsureHeader(r.Header, incomingHeaders, "User-Agent", "CLIProxyAPI/"+buildinfo.Version)
+		uaSourceHeaders := incomingHeaders
+		if wirePolicy.Uncloak && helps.IsClaudeCodeUserAgent(helps.HeaderValueCaseInsensitive(incomingHeaders, "User-Agent")) {
+			uaSourceHeaders = nil
+		}
+		misc.EnsureHeader(r.Header, uaSourceHeaders, "User-Agent", "CLIProxyAPI/"+buildinfo.Version)
 		applyBetaHeader()
 		sessionID := ""
 		for _, candidate := range sessionIDs {
