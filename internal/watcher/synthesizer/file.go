@@ -97,6 +97,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	if errExcluded != nil {
 		log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
 	}
+	if errGuard := coreauth.ValidateQuotaReservePolicy(metadata); errGuard != nil {
+		log.WithError(errGuard).Warnf("quota guard disabled for auth file %s", filepath.Base(fullPath))
+	}
 	t, _ := metadata["type"].(string)
 	provider := strings.ToLower(strings.TrimSpace(t))
 	if provider == "gemini" {

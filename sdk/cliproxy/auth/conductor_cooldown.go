@@ -1323,10 +1323,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.UpdatedAt = now
 
 		if !result.SkipQuotaObservation {
+			wasReserveExcluded, _ := isQuotaReserveExcluded(auth, now)
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			}
+			logQuotaReserveTransition(auth, wasReserveExcluded, now)
 		}
 
 		_ = m.persistLocked(ctx, auth)

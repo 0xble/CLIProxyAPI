@@ -836,6 +836,9 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 		return true, blockReasonCooldown, auth.Quota.NextRecoverAt
 	}
+	if excluded, recheckAt := isQuotaReserveExcluded(auth, now); excluded {
+		return true, blockReasonOther, recheckAt
+	}
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
 			modelKey := canonicalModelKey(model)
@@ -983,6 +986,9 @@ func isAuthBlockedByQuotaOrAuthForModel(auth *Auth, model string, now time.Time)
 		return true
 	}
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && (auth.Quota.NextRecoverAt.IsZero() || auth.Quota.NextRecoverAt.After(now)) {
+		return true
+	}
+	if excluded, _ := isQuotaReserveExcluded(auth, now); excluded {
 		return true
 	}
 	if model != "" && len(auth.ModelStates) > 0 {

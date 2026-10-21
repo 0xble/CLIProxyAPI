@@ -86,7 +86,16 @@ This fork supplies the local gateway build from fork `main` and tracks upstream 
 - Durable regressions: `TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559` (20/20 passing at HEAD; the upstream regression still reproduces on untouched v8.0.30) and `sdk/cliproxy/service_auth_unversioned_snapshot_test.go` (supersede, older versioned snapshot, intervening write, unrevisioned update). Existing `service_auth_sync_test.go`, `sdk/cliproxy/auth` and `internal/watcher` suites guard the prior stale-update protections.
 - Retirement condition: retire only the fork-local (b) change once a released upstream version fixes #6559 so the upstream test passes reliably without it. The upstream (a) disposition is already retired from the fork contract. Source rollback is a focused revert.
 
-Use stable IDs `CPA-007` and onward for future logical patches.
+### CPA-007 — per-credential weekly quota reserve guard
+
+- Required behavior: an auth file may opt in with `"quota_guard": {"reserve_percent": R, "reset_window": "<Go duration>", "final_reserve_percent": F}` (`0 <= F <= R <= 100`). While the last observed weekly window has at least R% remaining the credential routes normally. Below R% it is excluded from routing (scheduler, legacy selector and session-affinity rebind all treat it as unavailable, so selection falls through to other eligible credentials and only fails when none remain). Within `reset_window` before the weekly reset it is eligible down to F%. The guard lifts automatically once the reported reset time passes. Weekly state comes only from passive response headers already stored in `QuotaState.Signals` (Claude `Anthropic-Ratelimit-Unified-7d-Utilization`/`-Reset`; Codex whichever `X-Codex-Primary|Secondary-*` window spans 7 days). Missing or unparseable weekly data leaves the credential eligible; the session (5h) window is never consulted. Credentials without `quota_guard` are unaffected. Invalid policy objects disable the guard for that file with a warning. Transitions into and out of exclusion are logged once with remaining percent and reset time.
+- Upstream origin: fork-local feature, no upstream equivalent as of `v8.0.35`.
+- Source surfaces: `sdk/cliproxy/auth/quota_reserve.go`; checks in `isAuthBlockedForModel`, `isAuthBlockedByQuotaOrAuthForModel` (`selector.go`) and `isCredentialBlocked` (`scheduler.go`); transition logging in `MarkResult` (`conductor_cooldown.go`); load-time validation warning in `internal/watcher/synthesizer/file.go`.
+- Durable regressions: `sdk/cliproxy/auth/quota_reserve_test.go` (threshold table including the reset-window boundary and final reserve, policy parsing, Claude and Codex weekly header extraction, scheduler fall-through after a real `MarkResult` observation, automatic lift at reset, session-affinity rebind, unguarded credentials unaffected).
+- Upstream preflight: on each tag merge confirm the passive quota header names and `QuotaState.Signals` storage are unchanged, and that the availability functions above remain the single gate for scheduler, legacy and affinity selection.
+- Retirement condition: retire if upstream ships an equivalent per-credential reserve policy that passes these regressions.
+
+Use stable IDs `CPA-008` and onward for future logical patches.
 Upstream maintenance-contract issue/PR associations: none found when checked 2026-09-13.
 Retain this contract while maintaining the fork. Retire behavioral patches only after a released upstream implementation passes their complete regression contract.
 
