@@ -24,7 +24,11 @@ var (
 
 var metaRefreshGroup singleflight.Group
 
-const metaUserAgent = "muse-build/1.3.0 (interactive; macos-aarch64; build ac7280f2aca67769d1455a8847bb502b617d50f6)"
+const (
+	metaUserAgent = "muse-build/1.4.8"
+	metaClientID  = "tbh:exec"
+	metaAgentRole = "main"
+)
 
 // MetaExecutor implements the cliproxyauth.ProviderExecutor for Meta Muse models (api.meta.ai).
 type MetaExecutor struct {
@@ -53,7 +57,8 @@ func (e *MetaExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 		req.Header.Del("Authorization")
 	}
 	req.Header.Set("User-Agent", metaUserAgent)
-	req.Header.Set("X-Client-Id", "tbh:tui")
+	req.Header.Set("X-Client-Id", metaClientID)
+	req.Header.Set("X-Tbh-Agent-Role", metaAgentRole)
 
 	var attrs map[string]string
 	if auth != nil {

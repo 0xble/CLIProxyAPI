@@ -117,7 +117,7 @@ func (e *MetaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if errRequest != nil {
 		return resp, errRequest
 	}
-	applyMetaAPIHeaders(httpReq, enriched, token, true, opts.Headers)
+	applyMetaAPIHeaders(httpReq, enriched, token, true, opts.Headers, util.SessionIDFromContext(ctx))
 	e.recordMetaRequest(ctx, enriched, url, httpReq.Header.Clone(), prepared.body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, enriched, 0)
@@ -274,7 +274,7 @@ func (e *MetaExecutor) recordMetaRequest(ctx context.Context, auth *cliproxyauth
 	})
 }
 
-func applyMetaAPIHeaders(req *http.Request, auth *cliproxyauth.Auth, token string, stream bool, clientHeaders http.Header) {
+func applyMetaAPIHeaders(req *http.Request, auth *cliproxyauth.Auth, token string, stream bool, clientHeaders http.Header, sessionID string) {
 	req.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(token) != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -282,7 +282,15 @@ func applyMetaAPIHeaders(req *http.Request, auth *cliproxyauth.Auth, token strin
 		req.Header.Del("Authorization")
 	}
 	req.Header.Set("User-Agent", metaUserAgent)
-	req.Header.Set("X-Client-Id", "tbh:tui")
+	req.Header.Set("X-Client-Id", metaClientID)
+	req.Header.Set("X-Tbh-Agent-Role", metaAgentRole)
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		req.Header.Set("X-Tbh-Session-Id", sessionID)
+		req.Header.Set("X-Meta-Ai-Gateway-Session-Id", sessionID)
+	} else {
+		req.Header.Del("X-Tbh-Session-Id")
+		req.Header.Del("X-Meta-Ai-Gateway-Session-Id")
+	}
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("Cache-Control", "no-cache")

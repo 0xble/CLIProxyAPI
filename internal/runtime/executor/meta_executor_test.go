@@ -1055,8 +1055,8 @@ func TestMetaExecutor_PrepareRequest_ClientIdHeader_Issue6117(t *testing.T) {
 	if errPrepare := exec.PrepareRequest(req, auth); errPrepare != nil {
 		t.Fatal(errPrepare)
 	}
-	if got := req.Header.Get("X-Client-Id"); got != "tbh:tui" {
-		t.Errorf("X-Client-Id = %q, want %q", got, "tbh:tui")
+	if got := req.Header.Get("X-Client-Id"); got != metaClientID {
+		t.Errorf("X-Client-Id = %q, want %q", got, metaClientID)
 	}
 	if _, exists := req.Header["X-Client-Id:"]; exists {
 		t.Errorf("X-Client-Id: with trailing colon must not exist in headers")
@@ -1074,16 +1074,30 @@ func TestMetaExecutor_ApplyMetaAPIHeaders_ClientIdHeader_Issue6117(t *testing.T)
 			"api_key": "test-key",
 		},
 	}
-	applyMetaAPIHeaders(req, auth, "test-key", true, nil)
-	if got := req.Header.Get("X-Client-Id"); got != "tbh:tui" {
-		t.Errorf("applyMetaAPIHeaders: X-Client-Id = %q, want %q", got, "tbh:tui")
+	applyMetaAPIHeaders(req, auth, "test-key", true, nil, "session-123")
+	if got := req.Header.Get("X-Client-Id"); got != metaClientID {
+		t.Errorf("applyMetaAPIHeaders: X-Client-Id = %q, want %q", got, metaClientID)
+	}
+	if got := req.Header.Get("X-Tbh-Session-Id"); got != "session-123" {
+		t.Errorf("applyMetaAPIHeaders: X-Tbh-Session-Id = %q, want session-123", got)
+	}
+	if got := req.Header.Get("X-Meta-Ai-Gateway-Session-Id"); got != "session-123" {
+		t.Errorf("applyMetaAPIHeaders: X-Meta-Ai-Gateway-Session-Id = %q, want session-123", got)
 	}
 }
 
 func TestMetaExecutor_Execute_SendsClientIdHeader_Issue6117(t *testing.T) {
 	var capturedClientId string
+	var capturedUserAgent string
+	var capturedAgentRole string
+	var capturedSessionID string
+	var capturedGatewaySessionID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedClientId = r.Header.Get("X-Client-Id")
+		capturedUserAgent = r.Header.Get("User-Agent")
+		capturedAgentRole = r.Header.Get("X-Tbh-Agent-Role")
+		capturedSessionID = r.Header.Get("X-Tbh-Session-Id")
+		capturedGatewaySessionID = r.Header.Get("X-Meta-Ai-Gateway-Session-Id")
 		writeMetaResponsesOK(w, "ok")
 	}))
 	defer server.Close()
@@ -1101,12 +1115,27 @@ func TestMetaExecutor_Execute_SendsClientIdHeader_Issue6117(t *testing.T) {
 		Payload: []byte(`{"model":"muse-spark-1.3","messages":[{"role":"user","content":"hello"}]}`),
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("openai"),
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "session-123",
+		},
 	})
 	if errExec != nil {
 		t.Fatalf("Execute() error = %v", errExec)
 	}
-	if capturedClientId != "tbh:tui" {
-		t.Errorf("Execute: captured X-Client-Id = %q, want %q", capturedClientId, "tbh:tui")
+	if capturedClientId != metaClientID {
+		t.Errorf("Execute: captured X-Client-Id = %q, want %q", capturedClientId, metaClientID)
+	}
+	if capturedUserAgent != metaUserAgent {
+		t.Errorf("Execute: captured User-Agent = %q, want %q", capturedUserAgent, metaUserAgent)
+	}
+	if capturedAgentRole != metaAgentRole {
+		t.Errorf("Execute: captured X-Tbh-Agent-Role = %q, want %q", capturedAgentRole, metaAgentRole)
+	}
+	if capturedSessionID != "session-123" {
+		t.Errorf("Execute: captured X-Tbh-Session-Id = %q, want session-123", capturedSessionID)
+	}
+	if capturedGatewaySessionID != "session-123" {
+		t.Errorf("Execute: captured X-Meta-Ai-Gateway-Session-Id = %q, want session-123", capturedGatewaySessionID)
 	}
 }
 
