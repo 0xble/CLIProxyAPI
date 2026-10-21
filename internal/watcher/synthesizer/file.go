@@ -3,7 +3,9 @@ package synthesizer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -50,6 +52,9 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		full := filepath.Join(ctx.AuthDir, name)
 		data, errRead := os.ReadFile(full)
 		if errRead != nil {
+			if !errors.Is(errRead, fs.ErrNotExist) {
+				ctx.RecordIncompleteFile(full)
+			}
 			continue
 		}
 		if !json.Valid(data) {
@@ -96,6 +101,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	perAccountExcluded, errExcluded := ExtractExcludedModelsFromMetadata(metadata)
 	if errExcluded != nil {
 		log.WithError(errExcluded).Warnf("ignoring invalid excluded models in auth file %s", filepath.Base(fullPath))
+	}
+	if errGuard := coreauth.ValidateQuotaReservePolicy(metadata); errGuard != nil {
+		log.WithError(errGuard).Warnf("quota guard disabled for auth file %s", filepath.Base(fullPath))
 	}
 	t, _ := metadata["type"].(string)
 	provider := strings.ToLower(strings.TrimSpace(t))
