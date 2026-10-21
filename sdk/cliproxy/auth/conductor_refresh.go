@@ -657,7 +657,7 @@ func (m *Manager) markRejectedAccessToken(id, failedAccessToken string) {
 			current.RejectedAccessToken = failedAccessToken
 			m.auths[id] = current
 			if m.scheduler != nil {
-				m.scheduler.upsertAuth(current.Clone())
+				m.scheduler.upsertAuth(m.cloneAuthLocked(current))
 			}
 		}
 	}
@@ -734,7 +734,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			}
 			m.auths[id] = current
 			if m.scheduler != nil {
-				m.scheduler.upsertAuth(current.Clone())
+				m.scheduler.upsertAuth(m.cloneAuthLocked(current))
 			}
 		}
 		m.mu.Unlock()
@@ -772,7 +772,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 				}
 				m.auths[id] = current
 				if m.scheduler != nil {
-					m.scheduler.upsertAuth(current.Clone())
+					m.scheduler.upsertAuth(m.cloneAuthLocked(current))
 				}
 				m.mu.Unlock()
 				m.queueRefreshUnschedule(id)
@@ -854,7 +854,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			}
 			m.auths[id] = current
 			if m.scheduler != nil {
-				m.scheduler.upsertAuth(current.Clone())
+				m.scheduler.upsertAuth(m.cloneAuthLocked(current))
 			}
 		}
 		m.mu.Unlock()

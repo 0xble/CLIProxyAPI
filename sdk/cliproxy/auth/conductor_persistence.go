@@ -367,7 +367,7 @@ func (m *Manager) PersistMetadataEntry(ctx context.Context, id string, expectedE
 	if current.Generation > updated.Generation {
 		updated.Generation = current.Generation
 	}
-	m.auths[id] = updated.Clone()
+	m.auths[id] = m.cloneAuthLocked(updated)
 	m.mu.Unlock()
 	return true, false
 }

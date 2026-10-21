@@ -111,9 +111,6 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.EnsureIndex()
 	m.mu.Lock()
-	if m.quotaGuard != nil {
-		m.quotaGuard.Attach(auth)
-	}
 	if m.authEpochs == nil {
 		m.authEpochs = make(map[string]uint64)
 	}
@@ -142,6 +139,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		return nil, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
 	}
 	authClone := auth.Clone()
+	m.attachQuotaGuardLocked(authClone)
 	m.auths[auth.ID] = authClone
 	m.notifyAuthChangeLocked(auth.ID)
 	// Snapshot before unlocking: MarkResult mutates the published auth in place.
@@ -149,6 +147,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m.scheduler != nil {
 		schedulerSnapshot = authClone.Clone()
 	}
+	registeredSnapshot := m.cloneAuthLocked(auth)
 	m.mu.Unlock()
 	releaseMutation()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
@@ -163,7 +162,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
 	}
-	return auth.Clone(), nil
+	return registeredSnapshot, nil
 }
 
 type updateAuthMode int
@@ -218,7 +217,7 @@ func (m *Manager) finishAuthUpdate(ctx context.Context, committed *Auth, persist
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
 	if m.scheduler != nil {
-		m.scheduler.upsertAuth(committed.Clone())
+		m.scheduler.upsertAuth(m.cloneAuthSnapshot(committed.ID))
 	}
 	m.structuralEpoch.Add(1)
 	m.queueRefreshReschedule(committed.ID)
@@ -266,7 +265,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	// Do not let an in-flight refresh overwrite credentials committed after its snapshot.
 	if mode == updateModeRefresh && base != nil && (existing.CredentialVersion != base.CredentialVersion || CredentialsChanged(base, existing)) {
 		if auth.CodexRefreshPatch == nil || !auth.CodexRefreshPatch.CanApplyTo(existing.Metadata) {
-			current := existing.Clone()
+			current := m.cloneAuthLocked(existing)
 			m.mu.Unlock()
 			// Discarded stale refresh: committed=false so callers do not
 			// run finishAuthUpdate for a state this call did not change.
@@ -385,6 +384,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		auth.Generation = existing.Generation + 1
 	}
 	authClone := auth.Clone()
+	m.attachQuotaGuardLocked(authClone)
 	m.auths[auth.ID] = authClone
 	m.notifyAuthChangeLocked(auth.ID)
 	// Snapshot before unlocking: MarkResult mutates the published auth in place.
@@ -392,9 +392,10 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	if m.scheduler != nil {
 		schedulerSnapshot = authClone.Clone()
 	}
+	committedSnapshot := m.cloneAuthLocked(auth)
 	m.mu.Unlock()
 	_ = schedulerSnapshot
-	return auth.Clone(), true, cooldownStateChanged, nil
+	return committedSnapshot, true, cooldownStateChanged, nil
 }
 
 // Remove deletes an auth from runtime state without persisting.
@@ -524,7 +525,9 @@ func (m *Manager) Load(ctx context.Context) error {
 		if auth.CredentialVersion == 0 {
 			auth.CredentialVersion = 1
 		}
-		m.auths[auth.ID] = auth.Clone()
+		loaded := auth.Clone()
+		m.attachQuotaGuardLocked(loaded)
+		m.auths[auth.ID] = loaded
 	}
 
 	type removalTombstone struct {

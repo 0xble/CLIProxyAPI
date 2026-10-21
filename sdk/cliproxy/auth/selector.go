@@ -78,6 +78,7 @@ const (
 	blockReasonCooldown
 	blockReasonDisabled
 	blockReasonOther
+	blockReasonQuotaGuard
 )
 
 type modelCooldownError struct {
@@ -466,7 +467,7 @@ func preferCodexWebsocketAuths(ctx context.Context, provider string, available [
 	return available
 }
 
-func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
+func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount, quotaGuardCount int, earliest time.Time) {
 	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
 		candidate := auths[i]
@@ -479,11 +480,14 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 		if reason == blockReasonCooldown {
 			cooldownCount++
 		}
+		if reason == blockReasonQuotaGuard {
+			quotaGuardCount++
+		}
 		if reason != blockReasonDisabled && next.After(now) && (earliest.IsZero() || next.Before(earliest)) {
 			earliest = next
 		}
 	}
-	return available, cooldownCount, earliest
+	return available, cooldownCount, quotaGuardCount, earliest
 }
 
 func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
@@ -525,7 +529,7 @@ func getAvailableAuthsWithPriorityMode(auths []*Auth, provider, model string, no
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
 
-	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
+	availableByPriority, cooldownCount, quotaGuardCount, earliest := collectAvailableByPriority(auths, model, now)
 	if len(availableByPriority) == 0 {
 		if cooldownCount == len(auths) && !earliest.IsZero() {
 			providerForError := provider
@@ -537,6 +541,9 @@ func getAvailableAuthsWithPriorityMode(auths []*Auth, provider, model string, no
 				resetIn = 0
 			}
 			return nil, newModelCooldownError(model, providerForError, resetIn)
+		}
+		if quotaGuardCount == len(auths) {
+			return nil, &Error{Code: "quota_guard_unavailable", Message: "no auth available: quota guard excluded all credentials", Retryable: true, HTTPStatus: http.StatusServiceUnavailable}
 		}
 		return nil, newAuthUnavailableError(earliest, now)
 	}
@@ -834,7 +841,7 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 		return true, blockReasonOther, time.Time{}
 	}
 	if auth.quotaGuard != nil && auth.quotaGuard.IsBlocked(auth, now) {
-		return true, blockReasonOther, time.Time{}
+		return true, blockReasonQuotaGuard, time.Time{}
 	}
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 		return true, blockReasonCooldown, auth.Quota.NextRecoverAt

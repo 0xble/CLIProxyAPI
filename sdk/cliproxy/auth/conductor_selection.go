@@ -150,7 +150,7 @@ func (m *Manager) snapshotAuths() []*Auth {
 	defer m.mu.RUnlock()
 	out := make([]*Auth, 0, len(m.auths))
 	for _, a := range m.auths {
-		out = append(out, a.Clone())
+		out = append(out, m.cloneAuthLocked(a))
 	}
 	return out
 }
@@ -170,7 +170,7 @@ func (m *Manager) RefreshSchedulerEntry(authID string) {
 		m.mu.RUnlock()
 		return
 	}
-	snapshot := auth.Clone()
+	snapshot := m.cloneAuthLocked(auth)
 	m.mu.RUnlock()
 	m.structuralEpoch.Add(1)
 	m.scheduler.upsertAuth(snapshot)
@@ -511,7 +511,7 @@ func (m *Manager) LookupSessionAffinity(provider, model, sessionID string) (*Aut
 		m.mu.RUnlock()
 		return nil, "unbound"
 	}
-	snapshot := auth.Clone()
+	snapshot := m.cloneAuthLocked(auth)
 	m.mu.RUnlock()
 
 	if provider != "mixed" && snapshot.Provider != provider {
@@ -1545,11 +1545,7 @@ func (m *Manager) List() []*Auth {
 	defer m.mu.RUnlock()
 	list := make([]*Auth, 0, len(m.auths))
 	for _, auth := range m.auths {
-		clone := auth.Clone()
-		if m.quotaGuard != nil {
-			m.quotaGuard.Attach(clone)
-		}
-		list = append(list, clone)
+		list = append(list, m.cloneAuthLocked(auth))
 	}
 	return list
 }
@@ -1565,7 +1561,7 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 	if !ok {
 		return nil, false
 	}
-	return auth.Clone(), true
+	return m.cloneAuthLocked(auth), true
 }
 
 // PublishIfRegistrationCurrent serializes the final model-registration

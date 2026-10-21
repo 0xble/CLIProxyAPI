@@ -99,7 +99,7 @@ func (s *Service) Run(ctx context.Context) error {
 			includeBaseline: true,
 			auths:           s.coreManager.List(),
 		})
-		if cfg != nil && !strings.EqualFold(strings.TrimSpace(cfg.Routing.QuotaGuard.Mode), coreauth.QuotaGuardModeOff) && len(cfg.Routing.QuotaGuard.Policies) > 0 {
+		if cfg != nil && coreauth.ValidateQuotaGuardConfig(cfg.Routing.QuotaGuard) == nil && !strings.EqualFold(strings.TrimSpace(cfg.Routing.QuotaGuard.Mode), coreauth.QuotaGuardModeOff) && len(cfg.Routing.QuotaGuard.Policies) > 0 {
 			s.coreManager.StartQuotaGuard(ctx, coreauth.NewQuotaGuard(cfg.Routing.QuotaGuard))
 		}
 		interval := 15 * time.Minute
@@ -332,6 +332,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
+			s.coreManager.StopQuotaGuard()
 		}
 		if watcher := s.currentWatcher(); watcher != nil {
 			if err := watcher.Stop(); err != nil {

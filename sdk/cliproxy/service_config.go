@@ -268,7 +268,14 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 	}
 	s.coreManager.SetOAuthModelAlias(commit.cfg.OAuthModelAlias)
 	quotaCfg := commit.cfg.Routing.QuotaGuard
-	if strings.EqualFold(strings.TrimSpace(quotaCfg.Mode), coreauth.QuotaGuardModeOff) || len(quotaCfg.Policies) == 0 {
+	if errQuota := coreauth.ValidateQuotaGuardConfig(quotaCfg); errQuota != nil {
+		log.WithError(errQuota).Warn("ignoring invalid quota guard configuration")
+		s.coreManager.SetQuotaGuard(nil)
+	} else if commit.cfg.Home.Enabled {
+		// Home dispatch selects remotely and has no local credential snapshot for
+		// quota polling; quota guard is intentionally excluded in this mode.
+		s.coreManager.SetQuotaGuard(nil)
+	} else if strings.EqualFold(strings.TrimSpace(quotaCfg.Mode), coreauth.QuotaGuardModeOff) || len(quotaCfg.Policies) == 0 {
 		s.coreManager.SetQuotaGuard(nil)
 	} else {
 		s.coreManager.StartQuotaGuard(ctx, coreauth.NewQuotaGuard(quotaCfg))
