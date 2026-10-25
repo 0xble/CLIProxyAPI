@@ -88,18 +88,41 @@ func isReadOnlyUsernameKey(key string) bool {
 	return k == "username" || k == "user-name" || k == "user"
 }
 
-// redactReadOnlyProxyURL drops userinfo from a proxy URL so embedded proxy
-// credentials stay private in read-only views.
+// redactReadOnlyProxyURL drops userinfo from any URL-shaped value so embedded
+// credentials stay private in read-only views. It covers hierarchical URLs
+// (socks5://user:pass@host) and opaque ICE URLs (turn:user:pass@host), keeping
+// the scheme and host. Other values are returned unchanged.
 func redactReadOnlyProxyURL(value string) string {
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.User == nil {
-		if strings.Contains(value, "@") {
-			return ""
-		}
+	at := strings.LastIndex(value, "@")
+	if at < 0 {
 		return value
 	}
-	parsed.User = nil
-	return parsed.String()
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return ""
+		}
+		if parsed.User == nil {
+			return value
+		}
+		parsed.User = nil
+		return parsed.String()
+	}
+	scheme, rest, ok := strings.Cut(value, ":")
+	if !ok || !isReadOnlyOpaqueURLScheme(scheme) || strings.Index(rest, "@") < 0 {
+		return value
+	}
+	return scheme + ":" + rest[strings.LastIndex(rest, "@")+1:]
+}
+
+// isReadOnlyOpaqueURLScheme reports whether a scheme uses the opaque
+// scheme:userinfo@host form for credentials, as ICE server URLs do.
+func isReadOnlyOpaqueURLScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "turn", "turns", "stun", "stuns":
+		return true
+	}
+	return false
 }
 
 func redactReadOnlyConfig(value any) any {
@@ -128,6 +151,10 @@ func redactReadOnlyConfig(value any) any {
 		for index := range item {
 			item[index] = redactReadOnlyConfig(item[index])
 		}
+	case string:
+		// Userinfo can sit in any URL value, such as ice-servers urls lists,
+		// so every string is checked, not only url-named keys.
+		return redactReadOnlyProxyURL(item)
 	}
 	return value
 }

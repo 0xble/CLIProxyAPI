@@ -255,6 +255,11 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 		}
 		return
 	}
+	if node.Kind == yaml.ScalarNode {
+		// Userinfo can sit in any URL value, such as ice-servers urls lists.
+		node.Value = redactReadOnlyProxyURL(node.Value)
+		return
+	}
 	for _, child := range node.Content {
 		redactReadOnlyYAMLNode(child)
 	}

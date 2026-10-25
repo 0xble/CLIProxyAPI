@@ -40,7 +40,7 @@ oauth:
     codex:
       live-media-relay:
         ice-servers:
-          - urls: [turn:turn.example.invalid:3478]
+          - urls: [turn:turn.example.invalid:3478, "turn:iceurluser:synthetic-ice-url-secret@turn.example.invalid:3479"]
             username: synthetic-ice-user
             credential: synthetic-ice-secret
 routing:
@@ -68,6 +68,7 @@ plugins:
 		"synthetic-snake-access-secret", "synthetic-snake-refresh-secret", "synthetic-snake-apikey-secret",
 		"synthetic-snake-client-secret",
 		"synthetic-snake-proxy-secret", "synthetic-snake-relay-secret",
+		"synthetic-ice-url-secret",
 	}
 	// Full-access JSON already strips ICE credentials, so these are only
 	// asserted absent for read-only access.
