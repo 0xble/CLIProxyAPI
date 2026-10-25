@@ -53,6 +53,10 @@ plugins:
       refresh_token: synthetic-snake-refresh-secret
       api_key: synthetic-snake-apikey-secret
       client_secret: synthetic-snake-client-secret
+      proxy_url: socks5://plugin-user:synthetic-snake-proxy-secret@proxy.example.invalid:1080
+      relay:
+        credential: synthetic-snake-relay-secret
+        user_name: synthetic-snake-relay-user
       nested:
         - token: synthetic-token-secret
           label: safe-plugin-label
@@ -63,10 +67,11 @@ plugins:
 		"synthetic-proxy-secret", "synthetic-header-secret", "synthetic-xapikey-secret",
 		"synthetic-snake-access-secret", "synthetic-snake-refresh-secret", "synthetic-snake-apikey-secret",
 		"synthetic-snake-client-secret",
+		"synthetic-snake-proxy-secret", "synthetic-snake-relay-secret",
 	}
 	// Full-access JSON already strips ICE credentials, so these are only
 	// asserted absent for read-only access.
-	readOnlyHidden := []string{"synthetic-ice-user", "synthetic-ice-secret"}
+	readOnlyHidden := []string{"synthetic-ice-user", "synthetic-ice-secret", "synthetic-snake-relay-user", "plugin-user"}
 	for _, mode := range []struct {
 		name     string
 		readOnly bool

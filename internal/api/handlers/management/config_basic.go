@@ -74,6 +74,20 @@ func normalizeReadOnlyKey(key string) string {
 	return strings.NewReplacer("_", "-", ".", "-", " ", "-").Replace(strings.ToLower(strings.TrimSpace(key)))
 }
 
+// isReadOnlyURLKey reports whether a scalar key holds a URL whose userinfo
+// must be dropped, such as proxy-url, proxy_url or base-url.
+func isReadOnlyURLKey(key string) bool {
+	k := normalizeReadOnlyKey(key)
+	return k == "url" || strings.HasSuffix(k, "-url")
+}
+
+// isReadOnlyUsernameKey reports whether a key names the identifier that pairs
+// with a credential sibling, such as an ICE server username.
+func isReadOnlyUsernameKey(key string) bool {
+	k := normalizeReadOnlyKey(key)
+	return k == "username" || k == "user-name" || k == "user"
+}
+
 // redactReadOnlyProxyURL drops userinfo from a proxy URL so embedded proxy
 // credentials stay private in read-only views.
 func redactReadOnlyProxyURL(value string) string {
@@ -91,19 +105,21 @@ func redactReadOnlyProxyURL(value string) string {
 func redactReadOnlyConfig(value any) any {
 	switch item := value.(type) {
 	case map[string]any:
-		_, hasCredential := item["credential"]
+		hasCredential := false
 		for key := range item {
-			lower := strings.ToLower(key)
+			if normalizeReadOnlyKey(key) == "credential" {
+				hasCredential = true
+			}
+		}
+		for key := range item {
 			_, isScalar := item[key].(string)
 			_, isMapping := item[key].(map[string]any)
-			v8ProviderGroups := lower == "api-keys" && isMapping
+			v8ProviderGroups := normalizeReadOnlyKey(key) == "api-keys" && isMapping
 			switch {
-			case !v8ProviderGroups && isReadOnlySecretKey(key), isScalar && isReadOnlySecretScalarKey(key), hasCredential && lower == "username":
+			case !v8ProviderGroups && isReadOnlySecretKey(key), isScalar && isReadOnlySecretScalarKey(key), hasCredential && isReadOnlyUsernameKey(key):
 				delete(item, key)
-			case lower == "proxy-url":
-				if text, ok := item[key].(string); ok {
-					item[key] = redactReadOnlyProxyURL(text)
-				}
+			case isScalar && isReadOnlyURLKey(key):
+				item[key] = redactReadOnlyProxyURL(item[key].(string))
 			default:
 				item[key] = redactReadOnlyConfig(item[key])
 			}

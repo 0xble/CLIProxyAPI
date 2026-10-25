@@ -57,6 +57,11 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	yamlRequest := strings.HasSuffix(c.FullPath(), "/config.yaml")
 	if c.Request.Method == http.MethodGet {
 		config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
+		// Auth indexes are derived from api-key leaves, so attach them before
+		// read-only redaction removes those leaves.
+		if !yamlRequest {
+			h.injectV8APIKeyAuthIndexesLocked(root, data)
+		}
 		if h.cfg.RemoteManagement.ReadOnly {
 			redactReadOnlyYAMLNode(root)
 		}
@@ -67,9 +72,6 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 					deleteConfigV8Path(server, []string{"credential"})
 				}
 			}
-		}
-		if !yamlRequest {
-			h.injectV8APIKeyAuthIndexesLocked(root, data)
 		}
 		value := configV8Node(root, parts)
 		if value == nil {
@@ -232,21 +234,20 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 	if node.Kind == yaml.MappingNode {
 		hasCredential := false
 		for index := 0; index+1 < len(node.Content); index += 2 {
-			if strings.EqualFold(node.Content[index].Value, "credential") {
+			if normalizeReadOnlyKey(node.Content[index].Value) == "credential" {
 				hasCredential = true
 			}
 		}
 		for index := 0; index+1 < len(node.Content); {
 			key, value := node.Content[index], node.Content[index+1]
-			lower := strings.ToLower(key.Value)
 			// v8 "api-keys" is a provider mapping with safe routing metadata;
 			// recurse into it and let the per-entry credential leaves be removed.
-			v8ProviderGroups := lower == "api-keys" && value.Kind == yaml.MappingNode
-			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && lower == "username") {
+			v8ProviderGroups := normalizeReadOnlyKey(key.Value) == "api-keys" && value.Kind == yaml.MappingNode
+			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
 				node.Content = append(node.Content[:index], node.Content[index+2:]...)
 				continue
 			}
-			if lower == "proxy-url" && value.Kind == yaml.ScalarNode {
+			if value.Kind == yaml.ScalarNode && isReadOnlyURLKey(key.Value) {
 				value.Value = redactReadOnlyProxyURL(value.Value)
 			}
 			redactReadOnlyYAMLNode(value)
