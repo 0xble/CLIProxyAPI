@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,22 +35,114 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	h.mu.Unlock()
 	if readOnly {
 		var payload any
-		encoded, _ := json.Marshal(cfg)
-		if json.Unmarshal(encoded, &payload) == nil {
-			c.JSON(http.StatusOK, redactReadOnlyConfig(payload))
+		encoded, errMarshal := json.Marshal(cfg)
+		if errMarshal != nil || json.Unmarshal(encoded, &payload) != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
 			return
 		}
+		c.JSON(http.StatusOK, redactReadOnlyConfig(payload))
+		return
 	}
 	c.JSON(200, cfg)
+}
+
+// isReadOnlySecretKey reports whether a config key names a credential that a
+// read-only management view must never return.
+func isReadOnlySecretKey(key string) bool {
+	k := normalizeReadOnlyKey(key)
+	switch k {
+	case "api-key", "api-keys", "secret-key", "password", "token", "credential", "authorization", "github-token",
+		"secret", "client-secret", "access-token", "refresh-token", "id-token", "private-key":
+		return true
+	}
+	// Provider sections such as claude-api-key are lists of entries whose own
+	// api-key field is removed above, so a "-api-key" suffix only marks a
+	// secret when it holds a scalar, such as an x-api-key header value.
+	return strings.HasSuffix(k, "-token") || strings.HasSuffix(k, "-secret") || strings.HasSuffix(k, "-password") ||
+		strings.HasSuffix(k, "-private-key")
+}
+
+// isReadOnlySecretScalarKey reports whether a key holding a scalar value is a
+// credential, extending isReadOnlySecretKey with "-api-key" header names.
+func isReadOnlySecretScalarKey(key string) bool {
+	return strings.HasSuffix(normalizeReadOnlyKey(key), "-api-key")
+}
+
+// normalizeReadOnlyKey lowercases a key and folds "_", "." and spaces to "-",
+// because opaque plugin configs use snake_case names such as access_token.
+func normalizeReadOnlyKey(key string) string {
+	return strings.NewReplacer("_", "-", ".", "-", " ", "-").Replace(strings.ToLower(strings.TrimSpace(key)))
+}
+
+// isReadOnlyURLKey reports whether a scalar key holds a URL whose userinfo
+// must be dropped, such as proxy-url, proxy_url or base-url.
+func isReadOnlyURLKey(key string) bool {
+	k := normalizeReadOnlyKey(key)
+	return k == "url" || strings.HasSuffix(k, "-url")
+}
+
+// isReadOnlyUsernameKey reports whether a key names the identifier that pairs
+// with a credential sibling, such as an ICE server username.
+func isReadOnlyUsernameKey(key string) bool {
+	k := normalizeReadOnlyKey(key)
+	return k == "username" || k == "user-name" || k == "user"
+}
+
+// redactReadOnlyProxyURL drops userinfo from any URL-shaped value so embedded
+// credentials stay private in read-only views. It covers hierarchical URLs
+// (socks5://user:pass@host) and opaque ICE URLs (turn:user:pass@host), keeping
+// the scheme and host. Other values are returned unchanged.
+func redactReadOnlyProxyURL(value string) string {
+	at := strings.LastIndex(value, "@")
+	if at < 0 {
+		return value
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return ""
+		}
+		if parsed.User == nil {
+			return value
+		}
+		parsed.User = nil
+		return parsed.String()
+	}
+	scheme, rest, ok := strings.Cut(value, ":")
+	if !ok || !isReadOnlyOpaqueURLScheme(scheme) || strings.Index(rest, "@") < 0 {
+		return value
+	}
+	return scheme + ":" + rest[strings.LastIndex(rest, "@")+1:]
+}
+
+// isReadOnlyOpaqueURLScheme reports whether a scheme uses the opaque
+// scheme:userinfo@host form for credentials, as ICE server URLs do.
+func isReadOnlyOpaqueURLScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "turn", "turns", "stun", "stuns":
+		return true
+	}
+	return false
 }
 
 func redactReadOnlyConfig(value any) any {
 	switch item := value.(type) {
 	case map[string]any:
+		hasCredential := false
 		for key := range item {
-			switch strings.ToLower(key) {
-			case "api-key", "api-keys", "secret-key", "password", "token":
+			if normalizeReadOnlyKey(key) == "credential" {
+				hasCredential = true
+			}
+		}
+		for key := range item {
+			_, isScalar := item[key].(string)
+			_, isMapping := item[key].(map[string]any)
+			v8ProviderGroups := normalizeReadOnlyKey(key) == "api-keys" && isMapping
+			switch {
+			case !v8ProviderGroups && isReadOnlySecretKey(key), isScalar && isReadOnlySecretScalarKey(key), hasCredential && isReadOnlyUsernameKey(key):
 				delete(item, key)
+			case isScalar && isReadOnlyURLKey(key):
+				item[key] = redactReadOnlyProxyURL(item[key].(string))
 			default:
 				item[key] = redactReadOnlyConfig(item[key])
 			}
@@ -58,6 +151,10 @@ func redactReadOnlyConfig(value any) any {
 		for index := range item {
 			item[index] = redactReadOnlyConfig(item[index])
 		}
+	case string:
+		// Userinfo can sit in any URL value, such as ice-servers urls lists,
+		// so every string is checked, not only url-named keys.
+		return redactReadOnlyProxyURL(item)
 	}
 	return value
 }
@@ -228,11 +325,16 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 	h.mu.Unlock()
 	if readOnly {
 		var payload any
-		if yaml.Unmarshal(data, &payload) == nil {
-			if sanitized, errMarshal := yaml.Marshal(redactReadOnlyConfig(payload)); errMarshal == nil {
-				data = sanitized
-			}
+		if errUnmarshal := yaml.Unmarshal(data, &payload); errUnmarshal != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
+			return
 		}
+		sanitized, errMarshal := yaml.Marshal(redactReadOnlyConfig(payload))
+		if errMarshal != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
+			return
+		}
+		data = sanitized
 	}
 	c.Header("Content-Type", "application/yaml; charset=utf-8")
 	c.Header("Cache-Control", "no-store")

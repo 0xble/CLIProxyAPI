@@ -167,7 +167,7 @@ func TestCodexManagerRefresh_RotatedTokensSurvivePersistenceFailure(t *testing.T
 			if !ok || calls != 1 || current.Metadata["access_token"] != "fixture-new-access" || current.Metadata["refresh_token"] != "fixture-new-refresh" {
 				t.Fatal("manager discarded the successful rotation")
 			}
-			outer, siwc := current.CodexRefreshPatch.Partitions()
+			outer, siwc := current.CodexRefreshPatch.RefreshedOuter(), current.CodexRefreshPatch.RefreshedSIWC()
 			if !outer || siwc {
 				t.Fatal("lost or broadened the pending outer-only patch")
 			}

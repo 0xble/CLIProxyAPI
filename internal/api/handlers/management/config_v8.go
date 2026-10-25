@@ -57,17 +57,21 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	yamlRequest := strings.HasSuffix(c.FullPath(), "/config.yaml")
 	if c.Request.Method == http.MethodGet {
 		config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
+		// Auth indexes are derived from api-key leaves, so attach them before
+		// read-only redaction removes those leaves.
+		if !yamlRequest {
+			h.injectV8APIKeyAuthIndexesLocked(root, data)
+		}
 		if h.cfg.RemoteManagement.ReadOnly {
 			redactReadOnlyYAMLNode(root)
 		}
-		if !yamlRequest {
+		if h.cfg.RemoteManagement.ReadOnly || !yamlRequest {
 			if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
 				for _, server := range servers.Content {
 					deleteConfigV8Path(server, []string{"username"})
 					deleteConfigV8Path(server, []string{"credential"})
 				}
 			}
-			h.injectV8APIKeyAuthIndexesLocked(root, data)
 		}
 		value := configV8Node(root, parts)
 		if value == nil {
@@ -77,6 +81,13 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		c.Header("ETag", configV8ETag(diskHash))
 		if yamlRequest {
+			if h.cfg.RemoteManagement.ReadOnly {
+				data, err = yaml.Marshal(&doc)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
+					return
+				}
+			}
 			c.Data(http.StatusOK, "application/yaml; charset=utf-8", data)
 			return
 		}
@@ -221,16 +232,32 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 		return
 	}
 	if node.Kind == yaml.MappingNode {
+		hasCredential := false
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			if normalizeReadOnlyKey(node.Content[index].Value) == "credential" {
+				hasCredential = true
+			}
+		}
 		for index := 0; index+1 < len(node.Content); {
 			key, value := node.Content[index], node.Content[index+1]
-			switch strings.ToLower(key.Value) {
-			case "api-key", "api-keys", "secret-key", "password", "token":
+			// v8 "api-keys" is a provider mapping with safe routing metadata;
+			// recurse into it and let the per-entry credential leaves be removed.
+			v8ProviderGroups := normalizeReadOnlyKey(key.Value) == "api-keys" && value.Kind == yaml.MappingNode
+			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
 				node.Content = append(node.Content[:index], node.Content[index+2:]...)
 				continue
+			}
+			if value.Kind == yaml.ScalarNode && isReadOnlyURLKey(key.Value) {
+				value.Value = redactReadOnlyProxyURL(value.Value)
 			}
 			redactReadOnlyYAMLNode(value)
 			index += 2
 		}
+		return
+	}
+	if node.Kind == yaml.ScalarNode {
+		// Userinfo can sit in any URL value, such as ice-servers urls lists.
+		node.Value = redactReadOnlyProxyURL(node.Value)
 		return
 	}
 	for _, child := range node.Content {
