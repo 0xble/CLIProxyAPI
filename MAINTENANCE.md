@@ -109,11 +109,17 @@ Retain this contract while maintaining the fork. Retire behavioral patches only 
 ## Required Runtime Divergence
 
 The local gateway requires the read-only management patch merged as
-`4363f897a342c1976a93ad218f2b08a42719e5ee`. Released v8.0.41 has no
+`4363f897a342c1976a93ad218f2b08a42719e5ee`. Released v8.0.42 has no
 `remote-management.read-only` equivalent, GET-path allowlist, or matching config
 secret redaction. Preserve the fork middleware on both management versions and
-OAuth callbacks, the config capability, `internal/api/management_read_only_test.go`,
-and handler redaction tests. Retire only after released production source passes
+OAuth callbacks, the config capability, `internal/api/server_management_v8_test.go`,
+`internal/api/server_management_v8_redaction_test.go`, and handler redaction tests.
+Read-only `GET /v8/management/config.yaml` must serialize the sanitized YAML tree,
+not the original normalized bytes. Full-access YAML retains its original normalized
+response bytes. `TestManagementV8ConfigReadOnlyRedaction` exercises both formats and
+access modes through registered routes with synthetic secrets, preserving source
+ETags, no-store headers, safe metadata, comments, and the persisted file.
+Retire only after released production source passes
 the same method, path and redaction contract. Source synchronization does not
 authorize configuration changes or binary activation.
 

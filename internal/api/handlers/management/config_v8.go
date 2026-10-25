@@ -77,6 +77,13 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		c.Header("ETag", configV8ETag(diskHash))
 		if yamlRequest {
+			if h.cfg.RemoteManagement.ReadOnly {
+				data, err = yaml.Marshal(&doc)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
+					return
+				}
+			}
 			c.Data(http.StatusOK, "application/yaml; charset=utf-8", data)
 			return
 		}
