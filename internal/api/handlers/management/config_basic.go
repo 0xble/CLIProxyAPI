@@ -8,8 +8,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -91,8 +93,21 @@ func isReadOnlyUsernameKey(key string) bool {
 // redactReadOnlyProxyURL drops userinfo from any URL-shaped value so embedded
 // credentials stay private in read-only views. It covers hierarchical URLs
 // (socks5://user:pass@host) and opaque ICE URLs (turn:user:pass@host), keeping
-// the scheme and host. Other values are returned unchanged.
+// the scheme and host. Other values are returned unchanged. Free text is
+// redacted token by token, so a note that mentions an email address and a
+// link keeps its words while any credential-bearing URL inside it is stripped.
 func redactReadOnlyProxyURL(value string) string {
+	if strings.IndexFunc(value, unicode.IsSpace) >= 0 {
+		return readOnlyTextTokens.ReplaceAllStringFunc(value, redactReadOnlyURLToken)
+	}
+	return redactReadOnlyURLToken(value)
+}
+
+var readOnlyTextTokens = regexp.MustCompile(`\S+`)
+
+// redactReadOnlyURLToken strips userinfo from one whitespace-free value. A
+// malformed hierarchical URL that carries "@" is blanked, failing closed.
+func redactReadOnlyURLToken(value string) string {
 	at := strings.LastIndex(value, "@")
 	if at < 0 {
 		return value
