@@ -49,21 +49,29 @@ func (h *Handler) GetConfig(c *gin.Context) {
 // isReadOnlySecretKey reports whether a config key names a credential that a
 // read-only management view must never return.
 func isReadOnlySecretKey(key string) bool {
-	k := strings.ToLower(key)
+	k := normalizeReadOnlyKey(key)
 	switch k {
-	case "api-key", "api-keys", "secret-key", "password", "token", "credential", "authorization", "github-token":
+	case "api-key", "api-keys", "secret-key", "password", "token", "credential", "authorization", "github-token",
+		"secret", "client-secret", "access-token", "refresh-token", "id-token", "private-key":
 		return true
 	}
 	// Provider sections such as claude-api-key are lists of entries whose own
 	// api-key field is removed above, so a "-api-key" suffix only marks a
 	// secret when it holds a scalar, such as an x-api-key header value.
-	return strings.HasSuffix(k, "-token") || strings.HasSuffix(k, "-secret") || strings.HasSuffix(k, "-password")
+	return strings.HasSuffix(k, "-token") || strings.HasSuffix(k, "-secret") || strings.HasSuffix(k, "-password") ||
+		strings.HasSuffix(k, "-private-key")
 }
 
 // isReadOnlySecretScalarKey reports whether a key holding a scalar value is a
 // credential, extending isReadOnlySecretKey with "-api-key" header names.
 func isReadOnlySecretScalarKey(key string) bool {
-	return strings.HasSuffix(strings.ToLower(key), "-api-key")
+	return strings.HasSuffix(normalizeReadOnlyKey(key), "-api-key")
+}
+
+// normalizeReadOnlyKey lowercases a key and folds "_", "." and spaces to "-",
+// because opaque plugin configs use snake_case names such as access_token.
+func normalizeReadOnlyKey(key string) string {
+	return strings.NewReplacer("_", "-", ".", "-", " ", "-").Replace(strings.ToLower(strings.TrimSpace(key)))
 }
 
 // redactReadOnlyProxyURL drops userinfo from a proxy URL so embedded proxy

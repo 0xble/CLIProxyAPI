@@ -49,6 +49,10 @@ plugins:
   configs:
     sample:
       password: synthetic-password-secret
+      access_token: synthetic-snake-access-secret
+      refresh_token: synthetic-snake-refresh-secret
+      api_key: synthetic-snake-apikey-secret
+      client_secret: synthetic-snake-client-secret
       nested:
         - token: synthetic-token-secret
           label: safe-plugin-label
@@ -57,6 +61,8 @@ plugins:
 		"synthetic-management-secret", "synthetic-client-secret", "synthetic-provider-secret",
 		"synthetic-password-secret", "synthetic-token-secret", "synthetic-github-secret",
 		"synthetic-proxy-secret", "synthetic-header-secret", "synthetic-xapikey-secret",
+		"synthetic-snake-access-secret", "synthetic-snake-refresh-secret", "synthetic-snake-apikey-secret",
+		"synthetic-snake-client-secret",
 	}
 	// Full-access JSON already strips ICE credentials, so these are only
 	// asserted absent for read-only access.
