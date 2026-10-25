@@ -23,10 +23,26 @@ config-version: 8
 port: 8317
 remote-management:
   secret-key: synthetic-management-secret
+github-token: synthetic-github-secret
+proxy-url: http://proxyuser:synthetic-proxy-secret@proxy.example.invalid:8080
 api-keys: [synthetic-client-secret]
 claude-api-key:
   - api-key: synthetic-provider-secret
     base-url: https://provider.example.invalid
+openai-compatibility:
+  - name: safe-compat-name
+    base-url: https://compat.example.invalid
+    headers:
+      Authorization: Bearer synthetic-header-secret
+      X-Api-Key: synthetic-xapikey-secret
+oauth:
+  providers:
+    codex:
+      live-media-relay:
+        ice-servers:
+          - urls: [turn:turn.example.invalid:3478]
+            username: synthetic-ice-user
+            credential: synthetic-ice-secret
 routing:
   strategy: weighted-round-robin
 plugins:
@@ -39,8 +55,12 @@ plugins:
 `
 	secrets := []string{
 		"synthetic-management-secret", "synthetic-client-secret", "synthetic-provider-secret",
-		"synthetic-password-secret", "synthetic-token-secret",
+		"synthetic-password-secret", "synthetic-token-secret", "synthetic-github-secret",
+		"synthetic-proxy-secret", "synthetic-header-secret", "synthetic-xapikey-secret",
 	}
+	// Full-access JSON already strips ICE credentials, so these are only
+	// asserted absent for read-only access.
+	readOnlyHidden := []string{"synthetic-ice-user", "synthetic-ice-secret"}
 	for _, mode := range []struct {
 		name     string
 		readOnly bool
@@ -95,7 +115,14 @@ plugins:
 							t.Errorf("secret %q presence does not match read-only=%v", secret, mode.readOnly)
 						}
 					}
-					for _, safe := range []string{"weighted-round-robin", "safe-plugin-label"} {
+					if mode.readOnly {
+						for _, secret := range readOnlyHidden {
+							if strings.Contains(body, secret) {
+								t.Errorf("read-only response leaked %q", secret)
+							}
+						}
+					}
+					for _, safe := range []string{"weighted-round-robin", "safe-plugin-label", "proxy.example.invalid", "turn.example.invalid"} {
 						if !strings.Contains(body, safe) {
 							t.Errorf("response lost safe metadata %q", safe)
 						}

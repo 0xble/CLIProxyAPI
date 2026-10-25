@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,22 +35,65 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	h.mu.Unlock()
 	if readOnly {
 		var payload any
-		encoded, _ := json.Marshal(cfg)
-		if json.Unmarshal(encoded, &payload) == nil {
-			c.JSON(http.StatusOK, redactReadOnlyConfig(payload))
+		encoded, errMarshal := json.Marshal(cfg)
+		if errMarshal != nil || json.Unmarshal(encoded, &payload) != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
 			return
 		}
+		c.JSON(http.StatusOK, redactReadOnlyConfig(payload))
+		return
 	}
 	c.JSON(200, cfg)
+}
+
+// isReadOnlySecretKey reports whether a config key names a credential that a
+// read-only management view must never return.
+func isReadOnlySecretKey(key string) bool {
+	k := strings.ToLower(key)
+	switch k {
+	case "api-key", "api-keys", "secret-key", "password", "token", "credential", "authorization", "github-token":
+		return true
+	}
+	// Provider sections such as claude-api-key are lists of entries whose own
+	// api-key field is removed above, so a "-api-key" suffix only marks a
+	// secret when it holds a scalar, such as an x-api-key header value.
+	return strings.HasSuffix(k, "-token") || strings.HasSuffix(k, "-secret") || strings.HasSuffix(k, "-password")
+}
+
+// isReadOnlySecretScalarKey reports whether a key holding a scalar value is a
+// credential, extending isReadOnlySecretKey with "-api-key" header names.
+func isReadOnlySecretScalarKey(key string) bool {
+	return strings.HasSuffix(strings.ToLower(key), "-api-key")
+}
+
+// redactReadOnlyProxyURL drops userinfo from a proxy URL so embedded proxy
+// credentials stay private in read-only views.
+func redactReadOnlyProxyURL(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User == nil {
+		if strings.Contains(value, "@") {
+			return ""
+		}
+		return value
+	}
+	parsed.User = nil
+	return parsed.String()
 }
 
 func redactReadOnlyConfig(value any) any {
 	switch item := value.(type) {
 	case map[string]any:
+		_, hasCredential := item["credential"]
 		for key := range item {
-			switch strings.ToLower(key) {
-			case "api-key", "api-keys", "secret-key", "password", "token":
+			lower := strings.ToLower(key)
+			_, isScalar := item[key].(string)
+			switch {
+			case isReadOnlySecretKey(key), isScalar && isReadOnlySecretScalarKey(key), hasCredential && lower == "username":
 				delete(item, key)
+			case lower == "proxy-url":
+				if text, ok := item[key].(string); ok {
+					item[key] = redactReadOnlyProxyURL(text)
+				}
 			default:
 				item[key] = redactReadOnlyConfig(item[key])
 			}
@@ -228,11 +272,16 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 	h.mu.Unlock()
 	if readOnly {
 		var payload any
-		if yaml.Unmarshal(data, &payload) == nil {
-			if sanitized, errMarshal := yaml.Marshal(redactReadOnlyConfig(payload)); errMarshal == nil {
-				data = sanitized
-			}
+		if errUnmarshal := yaml.Unmarshal(data, &payload); errUnmarshal != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
+			return
 		}
+		sanitized, errMarshal := yaml.Marshal(redactReadOnlyConfig(payload))
+		if errMarshal != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
+			return
+		}
+		data = sanitized
 	}
 	c.Header("Content-Type", "application/yaml; charset=utf-8")
 	c.Header("Cache-Control", "no-store")

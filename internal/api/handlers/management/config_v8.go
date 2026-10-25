@@ -60,13 +60,15 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		if h.cfg.RemoteManagement.ReadOnly {
 			redactReadOnlyYAMLNode(root)
 		}
-		if !yamlRequest {
+		if h.cfg.RemoteManagement.ReadOnly || !yamlRequest {
 			if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
 				for _, server := range servers.Content {
 					deleteConfigV8Path(server, []string{"username"})
 					deleteConfigV8Path(server, []string{"credential"})
 				}
 			}
+		}
+		if !yamlRequest {
 			h.injectV8APIKeyAuthIndexesLocked(root, data)
 		}
 		value := configV8Node(root, parts)
@@ -228,12 +230,21 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 		return
 	}
 	if node.Kind == yaml.MappingNode {
+		hasCredential := false
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			if strings.EqualFold(node.Content[index].Value, "credential") {
+				hasCredential = true
+			}
+		}
 		for index := 0; index+1 < len(node.Content); {
 			key, value := node.Content[index], node.Content[index+1]
-			switch strings.ToLower(key.Value) {
-			case "api-key", "api-keys", "secret-key", "password", "token":
+			lower := strings.ToLower(key.Value)
+			if isReadOnlySecretKey(key.Value) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && lower == "username") {
 				node.Content = append(node.Content[:index], node.Content[index+2:]...)
 				continue
+			}
+			if lower == "proxy-url" && value.Kind == yaml.ScalarNode {
+				value.Value = redactReadOnlyProxyURL(value.Value)
 			}
 			redactReadOnlyYAMLNode(value)
 			index += 2
