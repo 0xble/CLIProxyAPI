@@ -239,7 +239,10 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 		for index := 0; index+1 < len(node.Content); {
 			key, value := node.Content[index], node.Content[index+1]
 			lower := strings.ToLower(key.Value)
-			if isReadOnlySecretKey(key.Value) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && lower == "username") {
+			// v8 "api-keys" is a provider mapping with safe routing metadata;
+			// recurse into it and let the per-entry credential leaves be removed.
+			v8ProviderGroups := lower == "api-keys" && value.Kind == yaml.MappingNode
+			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && lower == "username") {
 				node.Content = append(node.Content[:index], node.Content[index+2:]...)
 				continue
 			}

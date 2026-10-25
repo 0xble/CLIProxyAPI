@@ -122,7 +122,7 @@ plugins:
 							}
 						}
 					}
-					for _, safe := range []string{"weighted-round-robin", "safe-plugin-label", "proxy.example.invalid", "turn.example.invalid"} {
+					for _, safe := range []string{"weighted-round-robin", "safe-plugin-label", "proxy.example.invalid", "provider.example.invalid", "turn.example.invalid"} {
 						if !strings.Contains(body, safe) {
 							t.Errorf("response lost safe metadata %q", safe)
 						}

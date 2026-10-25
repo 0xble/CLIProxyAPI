@@ -87,8 +87,10 @@ func redactReadOnlyConfig(value any) any {
 		for key := range item {
 			lower := strings.ToLower(key)
 			_, isScalar := item[key].(string)
+			_, isMapping := item[key].(map[string]any)
+			v8ProviderGroups := lower == "api-keys" && isMapping
 			switch {
-			case isReadOnlySecretKey(key), isScalar && isReadOnlySecretScalarKey(key), hasCredential && lower == "username":
+			case !v8ProviderGroups && isReadOnlySecretKey(key), isScalar && isReadOnlySecretScalarKey(key), hasCredential && lower == "username":
 				delete(item, key)
 			case lower == "proxy-url":
 				if text, ok := item[key].(string); ok {
