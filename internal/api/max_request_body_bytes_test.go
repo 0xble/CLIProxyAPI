@@ -432,7 +432,8 @@ func TestServerMaxRequestBodyBytesCrossOriginRejectionAndPreflight(t *testing.T)
 			if rr.Header().Get("Access-Control-Allow-Origin") != "*" {
 				t.Fatal("response hidden by missing CORS origin")
 			}
-			if !strings.Contains(rr.Header().Get("Access-Control-Allow-Methods"), http.MethodPost) || rr.Header().Get("Access-Control-Allow-Headers") != "*" {
+			allowHeaders := strings.ToLower(rr.Header().Get("Access-Control-Allow-Headers"))
+			if !strings.Contains(rr.Header().Get("Access-Control-Allow-Methods"), http.MethodPost) || !strings.Contains(allowHeaders, "authorization") || !strings.Contains(allowHeaders, "content-type") {
 				t.Fatal("preflight allowances missing")
 			}
 			if !strings.Contains(rr.Header().Get("Access-Control-Expose-Headers"), "X-CPA-TRACE-ID") {

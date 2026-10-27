@@ -46,6 +46,9 @@ func (p *peekableBody) Close() error {
 
 // DecodeResponseBody decodes declared encodings in reverse order, or sniffs gzip/zstd without a header.
 // Closing the returned body also closes all decoders and the original body, including on setup errors.
+// The network body is always closed before the decoders: an asynchronous zstd
+// decoder's Close drains its pipeline and would block on an upstream that
+// keeps the connection open after its terminal event.
 func DecodeResponseBody(body io.ReadCloser, header http.Header) (io.ReadCloser, error) {
 	contentEncoding := strings.Join(header.Values("Content-Encoding"), ",")
 	if body == nil {
@@ -73,8 +76,8 @@ func DecodeResponseBody(body io.ReadCloser, header http.Header) (io.ReadCloser, 
 				return &compositeReadCloser{
 					Reader: gzipReader,
 					closers: []func() error{
-						gzipReader.Close,
 						pb.Close,
+						gzipReader.Close,
 					},
 				}, nil
 			case len(magic) >= 4 && magic[0] == 0x28 && magic[1] == 0xb5 && magic[2] == 0x2f && magic[3] == 0xfd:
@@ -88,8 +91,8 @@ func DecodeResponseBody(body io.ReadCloser, header http.Header) (io.ReadCloser, 
 				return &compositeReadCloser{
 					Reader: decoder,
 					closers: []func() error{
-						func() error { decoder.Close(); return nil },
 						pb.Close,
+						func() error { decoder.Close(); return nil },
 					},
 				}, nil
 			}
@@ -100,13 +103,13 @@ func DecodeResponseBody(body io.ReadCloser, header http.Header) (io.ReadCloser, 
 	reader := io.Reader(body)
 	decoderClosers := make([]func() error, 0, len(encodings))
 	cleanup := func() {
+		if errClose := body.Close(); errClose != nil {
+			log.Errorf("response decoder: close body error: %v", errClose)
+		}
 		for i := len(decoderClosers) - 1; i >= 0; i-- {
 			if errClose := decoderClosers[i](); errClose != nil {
 				log.Errorf("response decoder: close decoder error: %v", errClose)
 			}
-		}
-		if errClose := body.Close(); errClose != nil {
-			log.Errorf("response decoder: close body error: %v", errClose)
 		}
 	}
 	for index := len(encodings) - 1; index >= 0; index-- {
@@ -152,10 +155,10 @@ func DecodeResponseBody(body io.ReadCloser, header http.Header) (io.ReadCloser, 
 		return body, nil
 	}
 	closers := make([]func() error, 0, len(decoderClosers)+1)
+	closers = append(closers, body.Close)
 	for index := len(decoderClosers) - 1; index >= 0; index-- {
 		closers = append(closers, decoderClosers[index])
 	}
-	closers = append(closers, body.Close)
 	return &compositeReadCloser{Reader: reader, closers: closers}, nil
 }
 
