@@ -159,9 +159,11 @@ func (w *unconsumedBodyHTTPResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter
 }
 
 func (w *unconsumedBodyHTTPResponseWriter) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
+	_ = w.FlushError()
+}
+
+func (w *unconsumedBodyHTTPResponseWriter) FlushError() error {
+	return httpwire.FlushResponse(w.ResponseWriter)
 }
 
 func (w *unconsumedBodyHTTPResponseWriter) CloseNotify() <-chan bool {
