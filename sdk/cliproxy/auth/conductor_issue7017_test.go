@@ -159,7 +159,7 @@ func TestIssue7017AuthLevelTurnRateLimitIsNotQuota(t *testing.T) {
 		Message:    issue7017TurnBody(),
 		Retryable:  true,
 		HTTPStatus: http.StatusTooManyRequests,
-	}, &retryAfter, before, false)
+	}, &retryAfter, 0, before, false)
 
 	if auth.Quota.Exceeded || auth.Quota.Reason == "quota" {
 		t.Fatalf("auth-level turn rate limit must not be quota, got %+v", auth.Quota)
