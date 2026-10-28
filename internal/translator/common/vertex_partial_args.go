@@ -295,16 +295,6 @@ func (a *VertexPartialArgsAssembler) pushPartialArg(item gjson.Result) {
 		rawPath = item.Get("json_path").String()
 	}
 
-	var segments []pathSegment
-	if hasPathField {
-		var okPath bool
-		segments, okPath = parseVertexJSONPath(rawPath)
-		if !okPath {
-			a.setError(fmt.Errorf("invalid vertex partialArgs jsonPath: %q", rawPath))
-			return
-		}
-	}
-
 	innerWillContinue := item.Get("willContinue").Bool() || item.Get("will_continue").Bool()
 
 	strRes := item.Get("stringValue")
@@ -329,6 +319,25 @@ func (a *VertexPartialArgsAssembler) pushPartialArg(item gjson.Result) {
 	hasBool := boolRes.Exists() && boolRes.Type != gjson.Null
 	hasNull := nullRes.Exists() && !hasString && !hasNumber && !hasBool
 	hasAnyValue := hasString || hasNumber || hasBool || hasNull
+
+	var segments []pathSegment
+	if hasPathField {
+		path := strings.TrimSpace(rawPath)
+		// Vertex uses a valueless trailing [] as an array-end marker, not a selector.
+		arrayEnd := !strRes.Exists() && !numRes.Exists() && !boolRes.Exists() && !nullRes.Exists() && !innerWillContinue && strings.HasSuffix(path, "[]")
+		if arrayEnd {
+			path = strings.TrimSuffix(path, "[]")
+		}
+		var okPath bool
+		segments, okPath = parseVertexJSONPath(path)
+		if !okPath || arrayEnd && path == "" {
+			a.setError(fmt.Errorf("invalid vertex partialArgs jsonPath: %q", rawPath))
+			return
+		}
+		if arrayEnd {
+			return
+		}
+	}
 
 	// Valueless end marker (e.g. {"jsonPath":"$.city"} or {"jsonPath":"$.city","willContinue":false}).
 	if !hasAnyValue && !innerWillContinue {

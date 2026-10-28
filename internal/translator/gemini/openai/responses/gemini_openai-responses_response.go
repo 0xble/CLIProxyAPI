@@ -1148,6 +1148,29 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 
 			// Function call
 			if fc := part.Get("functionCall"); fc.Exists() {
+				partial := isStreamingFuncContinuation || translatorcommon.IsVertexStreamingFunctionCall(fc)
+				evidenceFC := fc
+				if isStreamingFuncContinuation {
+					// Only fill omitted continuation identity. Source-supplied conflicts remain evidence.
+					if fc.Get("name").String() == "" {
+						raw, _ := sjson.Set(fc.Raw, "name", st.ActiveStreamingFunc.RawName)
+						evidenceFC = gjson.Parse(raw)
+					}
+					if fc.Get("id").String() == "" && st.ActiveStreamingFunc.UpstreamID != "" {
+						raw, _ := sjson.Set(evidenceFC.Raw, "id", st.ActiveStreamingFunc.UpstreamID)
+						evidenceFC = gjson.Parse(raw)
+					}
+				}
+				evidence := geminiRecordFunctionEvidence(st, evidenceFC, explicitPartIndex, gjson.ValidBytes(rawJSON), partial)
+				if evidence.ApplyPatch && evidence.Err == nil && partial && !isStreamingFuncContinuation && evidence.PatchCall != nil {
+					evidence.Err = fmt.Errorf("cannot reopen completed apply_patch call")
+				}
+				if evidence.ApplyPatch && evidence.Err != nil {
+					st.SetToolInputError(evidence.Err)
+					st.Completed = true
+					out = append(out, emitEvent("response.failed", translatorcommon.ApplyPatchFailure(st.ResponseID, nextSeq())))
+					return false
+				}
 				// Before emitting function-call outputs, finalize reasoning, web search, and the message (if open).
 				// Responses streaming requires message done events before the next output_item.added.
 				finalizeReasoning()
@@ -1158,7 +1181,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				finalizeMessage()
 				st.LastSemanticKind = geminiResponsesCarrierFunction
 
-				if isStreamingFuncContinuation || translatorcommon.IsVertexStreamingFunctionCall(fc) {
+				if partial {
 					if !isStreamingFuncContinuation {
 						if st.ActiveStreamingFunc != nil {
 							st.HasFailedStreamingFunc = true
@@ -1207,6 +1230,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 						} else if isCustom {
 							if identity.ApplyPatch {
 								st.ActiveStreamingPatch = &translatorcommon.ApplyPatchCallState{ItemID: fmt.Sprintf("ctc_%s", callID), CallID: callID, Name: name, Namespace: namespace, OutputIndex: idx}
+								evidence.PatchCall = st.ActiveStreamingPatch
 							}
 							item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"in_progress","input":"","call_id":"","name":""}}`)
 							item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
@@ -1285,7 +1309,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 						} else if st.FuncCustom[idx] {
 							var inputStr string
 							if st.ActiveStreamingPatch != nil {
-								tail, fullInput, errFinishArguments := st.ActiveStreamingPatch.FinishArguments("")
+								tail, fullInput, errFinishArguments := st.ActiveStreamingPatch.FinishArguments(fullArgs)
 								if errFinishArguments != nil {
 									st.SetToolInputError(errFinishArguments)
 									st.Completed = true
@@ -1351,13 +1375,6 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					st.ActiveStreamingPatch = nil
 				}
 
-				evidence := geminiRecordFunctionEvidence(st, fc, explicitPartIndex, gjson.ValidBytes(rawJSON))
-				if evidence.ApplyPatch && evidence.Err != nil {
-					st.SetToolInputError(evidence.Err)
-					st.Completed = true
-					out = append(out, emitEvent("response.failed", translatorcommon.ApplyPatchFailure(st.ResponseID, nextSeq())))
-					return false
-				}
 				if evidence.RawName == "" {
 					return true
 				}
@@ -2066,7 +2083,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 				} else if p.Get("index").Exists() {
 					explicitIndex = int(p.Get("index").Int())
 				}
-				evidence := geminiRecordFunctionEvidence(evidenceState, fc, explicitIndex, gjson.ValidBytes(rawJSON))
+				evidence := geminiRecordFunctionEvidence(evidenceState, fc, explicitIndex, gjson.ValidBytes(rawJSON), false)
 				if evidence.ApplyPatch && evidence.Err != nil {
 					toolInputError = evidence.Err
 					return false
@@ -2308,9 +2325,9 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	return resp
 }
 
-// Full snapshots are evidence, never source prefixes. Stable IDs and explicit
-// part indexes identify repeated snapshots without merging distinct unkeyed calls.
-func geminiRecordFunctionEvidence(st *geminiToResponsesState, fc gjson.Result, partIndex int, validJSON bool) *geminiFunctionCallEvidence {
+// Stable IDs and explicit part indexes retain call provenance across partial
+// chunks and full snapshots without merging distinct unkeyed calls.
+func geminiRecordFunctionEvidence(st *geminiToResponsesState, fc gjson.Result, partIndex int, validJSON, partial bool) *geminiFunctionCallEvidence {
 	if st.FunctionEvidence == nil {
 		st.FunctionEvidence = make(map[string]*geminiFunctionCallEvidence)
 	}
@@ -2383,11 +2400,14 @@ func geminiRecordFunctionEvidence(st *geminiToResponsesState, fc gjson.Result, p
 			evidence.UpstreamID = id
 		}
 	}
-	var snapshot translatorcommon.ApplyPatchCallState
-	_, input, errFinishArguments := snapshot.FinishArguments(fc.Get("args").Raw)
 	if !validJSON {
 		recordError(fmt.Errorf("invalid Gemini apply_patch response JSON"))
 	}
+	if partial {
+		return evidence
+	}
+	var snapshot translatorcommon.ApplyPatchCallState
+	_, input, errFinishArguments := snapshot.FinishArguments(fc.Get("args").Raw)
 	if errFinishArguments != nil {
 		recordError(errFinishArguments)
 	} else {
