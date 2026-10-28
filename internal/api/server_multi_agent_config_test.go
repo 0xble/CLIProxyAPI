@@ -16,15 +16,16 @@ func TestModelsMultiAgentClientConfigAndReload(t *testing.T) {
 	for _, source := range []string{"local", "home"} {
 		t.Run(source, func(t *testing.T) {
 			const modelID = "config-multi-agent-synthetic"
+			const v1ModelID = "gpt-5.6-luna"
 			const clientID = "config-multi-agent-models"
 			modelRegistry := registry.GetGlobalRegistry()
-			modelRegistry.RegisterClient(clientID, "codex", []*registry.ModelInfo{{ID: modelID}})
+			modelRegistry.RegisterClient(clientID, "codex", []*registry.ModelInfo{{ID: modelID}, {ID: v1ModelID}})
 			t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
 			server := newTestServer(t)
 			engine := server.engine
 			if source == "home" {
 				server.cfg.Home.Enabled = true
-				client := newHomeCatalogClient(t, `{"codex":[{"id":"config-multi-agent-synthetic"}]}`)
+				client := newHomeCatalogClient(t, `{"codex":[{"id":"config-multi-agent-synthetic"},{"id":"gpt-5.6-luna"}]}`)
 				previousHome := home.Current()
 				home.SetCurrent(client)
 				t.Cleanup(func() { home.SetCurrent(previousHome) })
@@ -68,20 +69,26 @@ func TestModelsMultiAgentClientConfigAndReload(t *testing.T) {
 					if errUnmarshal := json.Unmarshal(recorder.Body.Bytes(), &response); errUnmarshal != nil {
 						t.Fatalf("decode catalog: %v", errUnmarshal)
 					}
+					// The synthetic fallback inherits v2. A v1 template still
+					// proves that enabling and removing the override take effect.
+					wantVersions := map[string]string{modelID: "v2", v1ModelID: "v1"}
+					if tc.want {
+						wantVersions[v1ModelID] = "v2"
+					}
 					for _, entry := range response.Models {
-						if entry["slug"] != modelID {
+						id, _ := entry["slug"].(string)
+						want, ok := wantVersions[id]
+						if !ok {
 							continue
 						}
-						var want any
-						if tc.want {
-							want = "v2"
-						}
 						if value, present := entry["multi_agent_version"]; !present || value != want {
-							t.Fatalf("multi_agent_version = %#v (present %t), want %#v", value, present, want)
+							t.Fatalf("%s multi_agent_version = %#v (present %t), want %#v", id, value, present, want)
 						}
-						return
+						delete(wantVersions, id)
 					}
-					t.Fatalf("missing model %s", modelID)
+					if len(wantVersions) != 0 {
+						t.Fatalf("missing models: %v", wantVersions)
+					}
 				})
 			}
 		})
