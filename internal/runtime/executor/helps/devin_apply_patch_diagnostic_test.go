@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	applypatch "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/apply-patch"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 )
 
@@ -55,6 +56,28 @@ func TestDevinApplyPatchDiagnosticsUsesTranslatorReason(t *testing.T) {
 	}
 	if explicit := d.Render(state, "devin_trailer_error"); !strings.Contains(explicit, `reason="devin_trailer_error"`) {
 		t.Fatalf("explicit reason did not win: %s", explicit)
+	}
+}
+
+func TestDevinPatchReasonCodeJSONControlCharacters(t *testing.T) {
+	const want = "invalid control character in apply_patch input"
+	for _, suffix := range []string{"in string literal", "in string"} {
+		reason := "decode apply_patch input value: invalid character '\\n' " + suffix
+		if got := devinPatchReasonCode(reason); got != want {
+			t.Errorf("devinPatchReasonCode(%q) = %q, want %q", reason, got, want)
+		}
+	}
+	for _, control := range []string{"\n", "\r", "\t", "\x00"} {
+		_, errUnwrap := applypatch.UnwrapInput(`{"input":"PRIVATE_PATH_OR_PATCH` + control + `"}`)
+		if errUnwrap == nil {
+			t.Fatalf("UnwrapInput accepted raw control character %q", control)
+		}
+		state := &common.ApplyPatchErrorState{}
+		state.SetToolInputError(errUnwrap)
+		got := NewDevinApplyPatchDiagnostics([]byte(devinDiagnosticPatchRequest)).Render(state, "")
+		if !strings.Contains(got, `reason="`+want+`"`) || strings.Contains(got, "PRIVATE_PATH_OR_PATCH") {
+			t.Errorf("unexpected log diagnostic for %q: %s", control, got)
+		}
 	}
 }
 

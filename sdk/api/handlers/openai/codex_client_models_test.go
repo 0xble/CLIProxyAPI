@@ -12,9 +12,10 @@ import (
 
 func TestCodexClientModelsResponseMultiAgentV2FollowsConfig(t *testing.T) {
 	modelID := "codex-client-multi-agent-v2-test"
+	v1ModelID := "gpt-5.6-luna"
 	clientID := "codex-client-multi-agent-v2-test-client"
 	modelRegistry := registry.GetGlobalRegistry()
-	modelRegistry.RegisterClient(clientID, "openai-compatibility", []*registry.ModelInfo{{ID: modelID}})
+	modelRegistry.RegisterClient(clientID, "openai-compatibility", []*registry.ModelInfo{{ID: modelID}, {ID: v1ModelID}})
 	t.Cleanup(func() {
 		modelRegistry.UnregisterClient(clientID)
 	})
@@ -35,26 +36,25 @@ func TestCodexClientModelsResponseMultiAgentV2FollowsConfig(t *testing.T) {
 			if !ok {
 				t.Fatalf("models type = %T, want []map[string]any", response["models"])
 			}
-			var entry map[string]any
+			// Disabling the override preserves each template's version,
+			// including v2 on the current synthetic-model fallback.
+			wantVersions := map[string]string{modelID: "v2", v1ModelID: "v1"}
+			if tt.enabled {
+				wantVersions[v1ModelID] = "v2"
+			}
 			for _, model := range models {
 				slug, _ := model["slug"].(string)
-				if slug == modelID {
-					entry = model
-					break
+				want, ok := wantVersions[slug]
+				if !ok {
+					continue
 				}
-			}
-			if entry == nil {
-				t.Fatalf("missing synthesized model %q", modelID)
-			}
-			value, exists := entry["multi_agent_version"]
-			if tt.enabled {
-				if !exists || value != "v2" {
-					t.Fatalf("multi_agent_version = %#v, want v2", value)
+				if value, exists := model["multi_agent_version"]; !exists || value != want {
+					t.Fatalf("%s multi_agent_version = %#v, want %s", slug, value, want)
 				}
-				return
+				delete(wantVersions, slug)
 			}
-			if !exists || value != nil {
-				t.Fatalf("multi_agent_version = %#v, want preserved null", value)
+			if len(wantVersions) != 0 {
+				t.Fatalf("missing models: %v", wantVersions)
 			}
 		})
 	}

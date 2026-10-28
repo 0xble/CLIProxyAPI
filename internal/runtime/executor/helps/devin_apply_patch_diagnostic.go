@@ -227,7 +227,7 @@ func devinPatchReasonCode(reason string) string {
 	}
 	if strings.HasPrefix(reason, "decode apply_patch input value: ") {
 		switch {
-		case strings.HasSuffix(reason, "in string literal"):
+		case strings.HasSuffix(reason, "in string literal"), strings.HasSuffix(reason, "in string"):
 			return "invalid control character in apply_patch input"
 		case strings.Contains(reason, "in \\u hexadecimal character escape"):
 			return "invalid Unicode escape in apply_patch input"
