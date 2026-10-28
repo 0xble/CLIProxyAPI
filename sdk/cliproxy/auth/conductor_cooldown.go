@@ -1085,6 +1085,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						// a still-live genuine quota deadline is left untouched and
 						// keeps blocking through the generic retry branches below.
 						next := transientRateLimitRetryAfter(now, result.RetryAfter, disableCooling)
+						if next.IsZero() && !disableCooling && prevModelRetryAfter.After(now) {
+							next = prevModelRetryAfter
+						}
 						if !next.IsZero() && state.Quota.Exceeded && state.Quota.NextRecoverAt.After(next) {
 							next = state.Quota.NextRecoverAt
 						}
@@ -2832,6 +2835,9 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		// Without a model key the transient capacity rejection degrades to an
 		// auth-level transient cooldown (issue 7017), never quota exhaustion.
 		next := transientRateLimitRetryAfter(now, retryAfter, disableCooling)
+		if next.IsZero() && !disableCooling && prevAuthRetryAfter.After(now) {
+			next = prevAuthRetryAfter
+		}
 		if !next.IsZero() && auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {
 			next = auth.Quota.NextRecoverAt
 		}
