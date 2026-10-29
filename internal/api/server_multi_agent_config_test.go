@@ -37,6 +37,8 @@ func TestModelsMultiAgentClientConfigAndReload(t *testing.T) {
 				raw  string
 				want bool
 			}{
+				// The synthetic fallback retains v2 in every case. The v1 model
+				// below independently verifies the override, aliases and reload.
 				{"omitted", "{}", false},
 				{"enabled", "client: {codex: {optimize-multi-agent-v2: true}}", true},
 				{"disabled", "client: {codex: {optimize-multi-agent-v2: false}}", false},
