@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+case "${1:-gate}" in
+  gate)
+    expected="${2:-${CI_EXPECTED_SHA:-$(git rev-parse HEAD)}}"
+    [[ "$(git rev-parse HEAD)" == "$expected" ]] || {
+      printf 'ci: HEAD does not match expected commit %s\n' "$expected" >&2
+      exit 1
+    }
+    go test ./... -count=1
+    go vet ./...
+    build_dir=$(mktemp -d "${TMPDIR:-${HOME}/.hermes/cache/scratch}/cliproxyapi-ci.XXXXXX")
+    trap 'rm -rf "$build_dir"' EXIT
+    go build -o "$build_dir/cli-proxy-api" ./cmd/server
+    "$build_dir/cli-proxy-api" -h >"$build_dir/help.txt" 2>&1
+    [[ -s "$build_dir/help.txt" ]]
+    [[ "$(git rev-parse HEAD)" == "$expected" ]] || {
+      printf 'ci: HEAD changed during verification\n' >&2
+      exit 1
+    }
+    ;;
+  *)
+    printf 'Usage: %s gate [expected-sha]\n' "$0" >&2
+    exit 2
+    ;;
+esac

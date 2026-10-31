@@ -80,6 +80,36 @@ func TestReadOnlyManagementPath(t *testing.T) {
 	}
 }
 
+func TestManagementV8ReadOnlyRejectsCredentialRecoveryActions(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{RemoteManagement: config.RemoteManagement{ReadOnly: true}}
+	cfg.AuthDir = t.TempDir()
+	cfg.Plugins.Dir = t.TempDir()
+	h := management.NewHandler(cfg, filepath.Join(t.TempDir(), "config.yaml"), nil)
+	h.SetLocalPassword("test-password")
+	s := &Server{cfg: cfg, engine: gin.New(), mgmt: h}
+	s.managementRoutesEnabled.Store(true)
+	s.registerManagementRoutes()
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/v8/management/credentials/verify"},
+		{http.MethodPost, "/v8/management/credentials/refresh"},
+		{http.MethodPost, "/v8/management/oauth/auth-url"},
+		{http.MethodGet, "/v8/management/oauth/auth-url?provider=codex"},
+	} {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, strings.NewReader(`{"id":"synthetic-codex"}`))
+			req.RemoteAddr = "127.0.0.1:1234"
+			req.Header.Set("Authorization", "Bearer test-password")
+			response := httptest.NewRecorder()
+			s.engine.ServeHTTP(response, req)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status=%d, want forbidden, body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestManagementV8IndependentContract(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	raw := "port: 8317\nrequest-retry: 3\ndebug: false\napi-keys: [client]\nremote-management: {secret-key: test-password}\n"
@@ -107,7 +137,7 @@ func TestManagementV8IndependentContract(t *testing.T) {
 	for _, route := range []string{
 		"GET /v0/management/debug", "PUT /v0/management/request-retry", "GET /v0/management/auth-files",
 		"GET /v8/management/observability/logs", "GET /v8/management/observability/usage/queue",
-		"GET /v8/management/credentials", "POST /v8/management/credentials",
+		"GET /v8/management/credentials", "POST /v8/management/credentials", "POST /v8/management/credentials/verify",
 		"GET /v8/management/oauth/auth-url", "POST /v8/management/oauth/auth-url", "POST /v8/management/oauth/import", "POST /v8/management/oauth/callback",
 		"POST /v8/management/routing/cooldown/reset",
 		"POST /v8/management/routing/model-definitions/refresh",
