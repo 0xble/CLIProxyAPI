@@ -103,8 +103,10 @@ func TestManagementV8ReadOnlyRejectsCredentialRecoveryActions(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer test-password")
 			response := httptest.NewRecorder()
 			s.engine.ServeHTTP(response, req)
-			if response.Code != http.StatusForbidden {
-				t.Fatalf("status=%d, want forbidden, body=%s", response.Code, response.Body.String())
+			// The read-only middleware rejects every non-allowlisted request with
+			// 405 before any handler runs (see managementReadOnlyMiddleware).
+			if response.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status=%d, want method not allowed, body=%s", response.Code, response.Body.String())
 			}
 		})
 	}
