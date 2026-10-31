@@ -106,6 +106,14 @@ Use stable IDs `CPA-008` and onward for future logical patches.
 Upstream maintenance-contract issue/PR associations: none found when checked 2026-09-13.
 Retain this contract while maintaining the fork. Retire behavioral patches only after a released upstream implementation passes their complete regression contract.
 
+### CPA-008 — Meta Muse subscription tool-request compatibility
+
+- Required behavior: tool-bearing Meta Responses requests include the canonical `muse` namespace while preserving the caller's tool names, schemas, ordering and indexes. Tool-less requests and caller-supplied `muse` namespaces remain unchanged. Payload overrides and filters remain the final semantic barrier.
+- Upstream origin: backport of https://github.com/router-for-me/CLIProxyAPI/pull/7113, commits `d9a688e6155720897433abb0972949b30235849f` and `b147b8d2105352a3e90ef82faf448135908ad5dd`. Meta's subscription gate rejects ordinary client tools with `client_attestation_denied`; matching headers alone is insufficient. The patch also updates Muse Code identity headers to 1.4.14 and uses fresh request-session IDs.
+- Source surfaces: `internal/runtime/executor/meta_executor.go`, `meta_executor_execute.go`, their tests, and `helps/meta_muse_tools.go` with helper tests. Both translated Chat Completions and Responses, streaming and non-streaming, share the request preparation path.
+- Verification: `go test ./internal/runtime/executor/... -count=1`, full `go test ./...`, server build, and a live tool-bearing Muse Responses request. Runtime activation also requires the existing Codex tool-result and Claude Messages canaries.
+- Retirement condition: remove this backport only after an adopted upstream release contains equivalent request preparation and passes the caller-tool preservation and final-payload-rule regressions. The namespace is a compatibility declaration, not an implementation of Muse's reminder tool in downstream clients.
+
 ## Required Runtime Divergence
 
 The local gateway requires the read-only management patch merged as
