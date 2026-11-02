@@ -1798,7 +1798,7 @@ func TestManager_AnthropicCreditBalanceTooLowRotatesCredentialAndRebindsSession(
 	applyAuthFailureState(authLevel, &Error{
 		HTTPStatus: http.StatusBadRequest,
 		Message:    creditBalanceLowBody,
-	}, nil, beforeExecute, false)
+	}, nil, 0, beforeExecute, false)
 	if authLevel.StatusMessage != "payment_required" {
 		t.Fatalf("auth StatusMessage = %q, want %q", authLevel.StatusMessage, "payment_required")
 	}
