@@ -2342,6 +2342,7 @@ func isTerminalRefreshGrantMessage(message string) bool {
 	for _, token := range []string{
 		"refresh_token_reused",
 		"refresh_token_expired",
+		"refresh token expired",
 		"refresh_token_invalidated",
 		"token_revoked",
 		"invalid_client",
