@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 // Capture is process-local and finite. Reloading the same configuration does not
@@ -148,24 +148,24 @@ func (r *UsageReporter) ObserveCacheRequest(ctx context.Context, cfg *config.Con
 		o.ShapeStatus = "oversized"
 		return
 	}
-	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+	if !ojson.ValidBytes(body) || !ojson.ParseBytes(body).IsObject() {
 		o.ShapeStatus = "invalid_json"
 		return
 	}
 	o.BodyDigest = s.digest("body", string(body))
 	o.Settings = make(map[string]string)
 	for _, path := range []string{"model", "thinking", "reasoning", "output_config", "text", "tool_choice", "parallel_tool_calls", "service_tier", "speed", "cache_control", "prompt_cache_key", "prompt_cache_retention", "context_management"} {
-		if value := gjson.GetBytes(body, path); value.Exists() {
+		if value := ojson.GetBytes(body, path); value.Exists() {
 			o.Settings[path] = s.digest("setting:"+path, value.Raw)
 		}
 	}
 	prefix := hmac.New(sha256.New, s.key[:])
 	for _, path := range []string{"tools", "system", "instructions", "messages", "input"} {
-		value := gjson.GetBytes(body, path)
+		value := ojson.GetBytes(body, path)
 		if !value.Exists() {
 			continue
 		}
-		items := []gjson.Result{value}
+		items := []ojson.Result{value}
 		if value.IsArray() {
 			items = value.Array()
 		}
@@ -189,10 +189,10 @@ func (r *UsageReporter) ObserveCacheRequest(ctx context.Context, cfg *config.Con
 			}
 		}
 	}
-	o.observeMarker("", gjson.GetBytes(body, "cache_control"))
+	o.observeMarker("", ojson.GetBytes(body, "cache_control"))
 }
 
-func (o *cacheObservation) observeMarker(path string, marker gjson.Result) {
+func (o *cacheObservation) observeMarker(path string, marker ojson.Result) {
 	if !marker.IsObject() || marker.Get("type").String() != "ephemeral" {
 		return
 	}
@@ -220,17 +220,17 @@ func (r *UsageReporter) ObserveCacheUsage(payload []byte) {
 		return
 	}
 	data := jsonPayload(payload)
-	if len(data) == 0 || !gjson.ValidBytes(data) {
+	if len(data) == 0 || !ojson.ValidBytes(data) {
 		return
 	}
-	root := gjson.ParseBytes(data)
+	root := ojson.ParseBytes(data)
 	for _, path := range []string{"usage", "message.usage", "response.usage"} {
 		node := root.Get(path)
 		if !node.IsObject() {
 			continue
 		}
 		for _, field := range []string{"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"} {
-			if node.Get(field).Type == gjson.Number {
+			if node.Get(field).Type == ojson.Number {
 				r.cacheObservation.UsageState = "reported"
 				found := false
 				for _, present := range r.cacheObservation.UsageFields {
@@ -247,7 +247,7 @@ func (r *UsageReporter) ObserveCacheUsage(payload []byte) {
 		} {
 			value := node.Get(field)
 			tokens, err := strconv.ParseInt(value.Raw, 10, 64)
-			if value.Type == gjson.Number && err == nil && tokens >= 0 {
+			if value.Type == ojson.Number && err == nil && tokens >= 0 {
 				*destination = &tokens
 			}
 		}

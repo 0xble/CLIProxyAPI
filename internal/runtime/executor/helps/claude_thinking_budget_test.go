@@ -3,8 +3,8 @@ package helps
 import (
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
 )
 
 func TestEnforceClaudeThinkingBudgetBelowMaxTokens(t *testing.T) {
@@ -27,10 +27,10 @@ func TestEnforceClaudeThinkingBudgetBelowMaxTokens(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out := EnforceClaudeThinkingBudgetBelowMaxTokens([]byte(tt.body), tt.info)
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != tt.wantType {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != tt.wantType {
 				t.Fatalf("thinking.type = %q, want %q; body=%s", got, tt.wantType, out)
 			}
-			budget := gjson.GetBytes(out, "thinking.budget_tokens")
+			budget := ojson.GetBytes(out, "thinking.budget_tokens")
 			if tt.wantBudget < 0 {
 				if budget.Exists() {
 					t.Fatalf("budget_tokens should be absent; body=%s", out)
@@ -38,7 +38,7 @@ func TestEnforceClaudeThinkingBudgetBelowMaxTokens(t *testing.T) {
 			} else if budget.Int() != tt.wantBudget {
 				t.Fatalf("budget_tokens = %d, want %d; body=%s", budget.Int(), tt.wantBudget, out)
 			}
-			if tt.wantType == "disabled" && gjson.GetBytes(out, "thinking.display").Exists() {
+			if tt.wantType == "disabled" && ojson.GetBytes(out, "thinking.display").Exists() {
 				t.Fatalf("display must be removed when thinking is disabled; body=%s", out)
 			}
 		})
