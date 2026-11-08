@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestVertexPartialArgsAssembler_ArrayEndMarkerWireSequence(t *testing.T) {
@@ -21,7 +21,7 @@ func TestVertexPartialArgsAssembler_ArrayEndMarkerWireSequence(t *testing.T) {
 	asm := NewVertexPartialArgsAssembler()
 	var joined strings.Builder
 	for i, raw := range chunks {
-		delta, done := asm.PushFunctionCall(gjson.Parse(raw))
+		delta, done := asm.PushFunctionCall(ojson.Parse(raw))
 		if asm.Err() != nil {
 			t.Fatalf("chunk %d: %v", i, asm.Err())
 		}
@@ -31,7 +31,7 @@ func TestVertexPartialArgsAssembler_ArrayEndMarkerWireSequence(t *testing.T) {
 		}
 	}
 	want := `{"tables":["sales_vs_budget_waterco","sales_vs_budget_davey"]}`
-	if joined.String() != want || asm.FullArguments() != want || !gjson.Valid(joined.String()) {
+	if joined.String() != want || asm.FullArguments() != want || !ojson.Valid(joined.String()) {
 		t.Fatalf("arguments=%s full=%s, want %s", joined.String(), asm.FullArguments(), want)
 	}
 }
@@ -47,7 +47,7 @@ func TestVertexPartialArgsAssembler_ArrayEndMarkerBeforeSibling(t *testing.T) {
 			}
 			var joined strings.Builder
 			for i, raw := range chunks {
-				delta, done := asm.PushFunctionCall(gjson.Parse(raw))
+				delta, done := asm.PushFunctionCall(ojson.Parse(raw))
 				if asm.Err() != nil || done != (i == len(chunks)-1) {
 					t.Fatalf("chunk %d: done=%v err=%v", i, done, asm.Err())
 				}
@@ -75,7 +75,7 @@ func TestVertexPartialArgsAssembler_RejectValueBearingArrayEndPaths(t *testing.T
 	} {
 		t.Run(item, func(t *testing.T) {
 			asm := NewVertexPartialArgsAssembler()
-			delta, done := asm.PushFunctionCall(gjson.Parse(`{"partialArgs":[` + item + `]}`))
+			delta, done := asm.PushFunctionCall(ojson.Parse(`{"partialArgs":[` + item + `]}`))
 			if asm.Err() == nil || done || delta != "" {
 				t.Fatalf("invalid path accepted: delta=%q done=%v err=%v", delta, done, asm.Err())
 			}

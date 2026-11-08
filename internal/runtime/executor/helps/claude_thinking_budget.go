@@ -1,9 +1,8 @@
 package helps
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // EnforceClaudeThinkingBudgetBelowMaxTokens restores the Anthropic invariant
@@ -18,11 +17,11 @@ import (
 // model minimum, it is clamped. Otherwise manual thinking cannot be satisfied
 // and is disabled so the request remains valid.
 func EnforceClaudeThinkingBudgetBelowMaxTokens(body []byte, modelInfo *registry.ModelInfo) []byte {
-	if len(body) == 0 || gjson.GetBytes(body, "thinking.type").String() != "enabled" {
+	if len(body) == 0 || ojson.GetBytes(body, "thinking.type").String() != "enabled" {
 		return body
 	}
-	budget := gjson.GetBytes(body, "thinking.budget_tokens")
-	maxTokens := gjson.GetBytes(body, "max_tokens")
+	budget := ojson.GetBytes(body, "thinking.budget_tokens")
+	maxTokens := ojson.GetBytes(body, "max_tokens")
 	if !budget.Exists() || !maxTokens.Exists() || maxTokens.Int() <= 0 || budget.Int() < maxTokens.Int() {
 		return body
 	}
@@ -33,18 +32,18 @@ func EnforceClaudeThinkingBudgetBelowMaxTokens(body []byte, modelInfo *registry.
 		minBudget = int64(modelInfo.Thinking.Min)
 	}
 	if adjusted >= minBudget {
-		if updated, errSet := sjson.SetBytes(body, "thinking.budget_tokens", adjusted); errSet == nil {
+		if updated, errSet := ojson.SetBytes(body, "thinking.budget_tokens", adjusted); errSet == nil {
 			return updated
 		}
 		return body
 	}
 
 	out := body
-	if updated, errSet := sjson.SetBytes(out, "thinking.type", "disabled"); errSet == nil {
+	if updated, errSet := ojson.SetBytes(out, "thinking.type", "disabled"); errSet == nil {
 		out = updated
 	}
 	for _, path := range []string{"thinking.budget_tokens", "thinking.display"} {
-		if updated, errDelete := sjson.DeleteBytes(out, path); errDelete == nil {
+		if updated, errDelete := ojson.DeleteBytes(out, path); errDelete == nil {
 			out = updated
 		}
 	}

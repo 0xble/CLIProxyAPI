@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 // TestClaudeExecutor_PayloadDefaultMaxTokensKeepsThinkingBudgetBelowLimit is the
@@ -60,25 +60,25 @@ func TestClaudeExecutor_PayloadDefaultMaxTokensKeepsThinkingBudgetBelowLimit(t *
 		name := map[bool]string{false: "execute", true: "stream"}[stream]
 		t.Run(name+"/budget clamped below payload default", func(t *testing.T) {
 			body := run(t, withDefault(map[string]any{"max_tokens": 8000}), stream)
-			if got := gjson.GetBytes(body, "max_tokens").Int(); got != 8000 {
+			if got := ojson.GetBytes(body, "max_tokens").Int(); got != 8000 {
 				t.Fatalf("max_tokens = %d, want 8000; body=%s", got, body)
 			}
-			if got := gjson.GetBytes(body, "thinking.type").String(); got != "enabled" {
+			if got := ojson.GetBytes(body, "thinking.type").String(); got != "enabled" {
 				t.Fatalf("thinking.type = %q, want enabled; body=%s", got, body)
 			}
-			if got := gjson.GetBytes(body, "thinking.budget_tokens").Int(); got != 7999 {
+			if got := ojson.GetBytes(body, "thinking.budget_tokens").Int(); got != 7999 {
 				t.Fatalf("thinking.budget_tokens = %d, want 7999; body=%s", got, body)
 			}
 		})
 		t.Run(name+"/thinking disabled when limit is below model minimum", func(t *testing.T) {
 			body := run(t, withDefault(map[string]any{"max_tokens": 1000}), stream)
-			if got := gjson.GetBytes(body, "max_tokens").Int(); got != 1000 {
+			if got := ojson.GetBytes(body, "max_tokens").Int(); got != 1000 {
 				t.Fatalf("max_tokens = %d, want 1000; body=%s", got, body)
 			}
-			if got := gjson.GetBytes(body, "thinking.type").String(); got != "disabled" {
+			if got := ojson.GetBytes(body, "thinking.type").String(); got != "disabled" {
 				t.Fatalf("thinking.type = %q, want disabled; body=%s", got, body)
 			}
-			if gjson.GetBytes(body, "thinking.budget_tokens").Exists() {
+			if ojson.GetBytes(body, "thinking.budget_tokens").Exists() {
 				t.Fatalf("thinking.budget_tokens must be removed; body=%s", body)
 			}
 		})
@@ -96,7 +96,7 @@ func TestClaudeExecutor_PayloadDefaultMaxTokensKeepsThinkingBudgetBelowLimit(t *
 			body := run(t, executor, stream)
 			// Payload configuration is the final semantic barrier: an operator
 			// rule targeting thinking must reach upstream unchanged.
-			if got := gjson.GetBytes(body, "thinking.budget_tokens").Int(); got != 9000 {
+			if got := ojson.GetBytes(body, "thinking.budget_tokens").Int(); got != 9000 {
 				t.Fatalf("thinking.budget_tokens = %d, want configured 9000; body=%s", got, body)
 			}
 		})

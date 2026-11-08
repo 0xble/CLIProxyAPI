@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestGeminiApplyPatchPartialArgsLifecycle(t *testing.T) {
@@ -82,7 +82,7 @@ func TestGeminiApplyPatchPartialArgsCrossKeyEvidenceConflict(t *testing.T) {
 					t.Run(strings.Join([]string{indexKey, patchMode, direction, name}, "/"), func(t *testing.T) {
 						var param any
 						request := []byte(geminiMixedPatchReviewRequest)
-						send := func(part string) []gjson.Result {
+						send := func(part string) []ojson.Result {
 							return geminiPatchReviewEvents(t, ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", request, nil, geminiPatchReviewFrame([]string{part}, false), &param))
 						}
 						send(geminiPatchReviewPart(indexKey, 3, "ordinary", "lookup", `{"x":1}`))
@@ -130,7 +130,7 @@ func TestGeminiApplyPatchPartialArgsInvalidResponseJSON(t *testing.T) {
 	part := `{"functionCall":{"id":"patch","name":"apply_patch","partialArgs":[{"jsonPath":"$.input","stringValue":"secret","willContinue":true}],"willContinue":true}}`
 	raw := geminiPatchReviewFrame([]string{part}, false)
 	raw = raw[:len(raw)-1]
-	if gjson.ValidBytes(raw) {
+	if ojson.ValidBytes(raw) {
 		t.Fatal("fixture must be malformed JSON")
 	}
 	events := geminiPatchReviewEvents(t, ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", []byte(geminiMixedPatchReviewRequest), nil, raw, &param))

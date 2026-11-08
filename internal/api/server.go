@@ -171,18 +171,15 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
-	engine.Use(logging.GinLogrusRecovery())
 	engine.Use(logging.CPATraceIDMiddleware())
 	// CORS must decorate early body-limit rejections and answer preflight before
 	// body-reading middleware or authentication, without weakening their limits.
 	engine.Use(corsMiddleware())
 	engine.Use(s.maxRequestBodyBytesMiddleware())
-	for _, mw := range optionState.extraMiddleware {
-		engine.Use(mw)
-	}
 
-	// Add request logging middleware (positioned after recovery, before auth)
-	// Resolve logs directory relative to the configuration file directory.
+	// Add request logging middleware before recovery and extra middleware so that
+	// any panic response written by GinLogrusRecovery or custom extraMiddleware is
+	// captured before request logging finalizes.
 	var requestLogger logging.RequestLogger
 	var toggle func(bool)
 	if !cfg.CommercialMode {
@@ -198,6 +195,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	s.requestLogger = requestLogger
 	s.loggerToggle = toggle
+
+	engine.Use(logging.GinLogrusRecovery())
+	for _, mw := range optionState.extraMiddleware {
+		engine.Use(mw)
+	}
 
 	// CORS is registered above, before the body limit (CPA-004).
 	engine.Use(s.responseCompressionMiddleware())
