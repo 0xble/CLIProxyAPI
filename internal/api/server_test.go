@@ -3927,7 +3927,16 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 		registry.GetGlobalRegistry().UnregisterClient(authEntry.ID)
 	})
 
-	httpServer := httptest.NewServer(server.engine)
+	// httptest.Server.Close does not wait for hijacked websocket handlers, which
+	// still write their request log into the temp auth dir after the socket closes.
+	// Track every handler so cleanup runs only after those writes finish.
+	var handlers sync.WaitGroup
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
+		server.engine.ServeHTTP(w, r)
+	}))
+	defer handlers.Wait()
 	defer httpServer.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/responses"
