@@ -194,6 +194,163 @@ func TestFileTokenStoreLoginPolicyIsolation(t *testing.T) {
 	}
 }
 
+func TestFileTokenStoreLoginPolicySharedCodexWorkspace(t *testing.T) {
+	for _, withAccountID := range []bool{false, true} {
+		t.Run(map[bool]string{false: "filename-hash-only", true: "shared-account-id"}[withAccountID], func(t *testing.T) {
+			dir := t.TempDir()
+			store := NewFileTokenStore()
+			store.SetBaseDir(dir)
+			for _, email := range []string{"alice@example.test", "bob@example.test", "carol@example.test"} {
+				name := "codex-1234abcd-" + email + "-pro.json"
+				metadata := map[string]any{"type": "codex", "email": email, "access_token": "synthetic"}
+				if withAccountID {
+					metadata["account_id"] = "shared-workspace"
+				}
+				if email == "alice@example.test" {
+					metadata["weight"] = float64(5)
+				}
+				path, errSave := store.Save(coreauth.WithAuthCreationIntent(context.Background()), &coreauth.Auth{
+					ID: name, FileName: name, Provider: "codex", Metadata: metadata,
+				})
+				if errSave != nil {
+					t.Fatal(errSave)
+				}
+				if email != "alice@example.test" {
+					if _, copied := readLoginPolicyFixture(t, path)["weight"]; copied {
+						t.Fatal("shared workspace inherited another member's policy")
+					}
+				}
+			}
+			loaded, errList := store.List(context.Background())
+			if errList != nil || len(loaded) != 3 {
+				t.Fatalf("workspace credentials retired: count=%d err=%v", len(loaded), errList)
+			}
+			backups, errGlob := filepath.Glob(filepath.Join(dir, "auth-backups", "*.bak"))
+			if errGlob != nil || len(backups) != 0 {
+				t.Fatalf("unrelated credentials archived: %v %v", backups, errGlob)
+			}
+		})
+	}
+}
+
+func TestFileTokenStoreLoginPolicyClaudeOrganizationAmbiguity(t *testing.T) {
+	const email = "user@example.test"
+	for _, tc := range []struct {
+		name, organization, account, filename string
+		wantMatch                             bool
+	}{
+		{name: "missing-legacy-organization-remains-ambiguous", account: "shared-account"},
+		{name: "missing-legacy-organization-email-only-remains-ambiguous"},
+		{name: "account-hashed-name-without-account-metadata-remains-ambiguous", filename: claude.CredentialFileName(email, "", "shared-account")},
+		{name: "noncanonical-account-predecessor-remains-ambiguous", account: "shared-account", filename: "claude-other.json"},
+		{name: "different-organization-with-shared-account", organization: "organization-b", account: "shared-account"},
+		{name: "account-predecessor-associated-with-another-organization", organization: "organization-b", account: "shared-account", filename: claude.CredentialFileName(email, "", "shared-account")},
+		{name: "matching-account-hashed-predecessor", account: "shared-account", filename: claude.CredentialFileName(email, "", "shared-account"), wantMatch: true},
+		{name: "matching-organization", organization: "organization-a", account: "shared-account", wantMatch: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			oldName := tc.filename
+			if oldName == "" {
+				oldName = claude.CredentialFileName(email, "", "")
+			}
+			oldPath := filepath.Join(dir, oldName)
+			doc := ojson.NewDocString("{}")
+			for key, value := range map[string]any{"type": "claude", "email": email, "organization_uuid": tc.organization, "account_uuid": tc.account, "weight": 5} {
+				if errSet := doc.Set(key, value); errSet != nil {
+					t.Fatal(errSet)
+				}
+			}
+			prior := doc.String()
+			writeLoginPolicyFixture(t, oldPath, prior)
+			name := claude.CredentialFileName(email, "organization-a", "shared-account")
+			record := &coreauth.Auth{ID: name, FileName: name, Provider: "claude", Metadata: map[string]any{
+				"type": "claude", "email": email, "organization_uuid": "organization-a", "account_uuid": "shared-account", "access_token": "synthetic",
+			}}
+			store := NewFileTokenStore()
+			store.SetBaseDir(dir)
+			path, errSave := store.Save(coreauth.WithAuthCreationIntent(context.Background()), record)
+			if errSave != nil {
+				t.Fatal(errSave)
+			}
+			_, copied := readLoginPolicyFixture(t, path)["weight"]
+			if copied != tc.wantMatch {
+				t.Fatalf("policy copied=%v, want %v", copied, tc.wantMatch)
+			}
+			if tc.wantMatch {
+				if _, errStat := os.Stat(oldPath); !os.IsNotExist(errStat) {
+					t.Fatal("accepted predecessor was not retired", errStat)
+				}
+			} else {
+				raw, errRead := os.ReadFile(oldPath)
+				if errRead != nil || string(raw) != prior {
+					t.Fatal("ambiguous or conflicting credential changed")
+				}
+				if _, errStat := os.Stat(loginRetirementFence(oldPath)); !os.IsNotExist(errStat) {
+					t.Fatal("ambiguous or conflicting credential fenced", errStat)
+				}
+			}
+		})
+	}
+}
+
+func TestFileTokenStoreLoginPolicyRediscoveredProject(t *testing.T) {
+	dir := t.TempDir()
+	name := "antigravity-user@example.test.json"
+	writeLoginPolicyFixture(t, filepath.Join(dir, name), `{"type":"antigravity","email":"user@example.test","project_id":"old-project","weight":5}`)
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	path, errSave := store.Save(coreauth.WithAuthCreationIntent(context.Background()), &coreauth.Auth{
+		ID: name, Provider: "antigravity", Metadata: map[string]any{"type": "antigravity", "email": "USER@example.test", "project_id": "rediscovered-project", "access_token": "synthetic"},
+	})
+	if errSave != nil {
+		t.Fatal(errSave)
+	}
+	saved := readLoginPolicyFixture(t, path)
+	if saved["weight"] != float64(5) || saved["project_id"] != "rediscovered-project" {
+		t.Fatalf("same-account project rediscovery lost policy or new project: %#v", saved)
+	}
+}
+
+func TestCarryLoginPolicyReportsOnlyArchivedFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex-1234abcd-user@example.test-promax.json")
+	writeLoginPolicyFixture(t, path, `{"type":"codex","email":"user@example.test","account_id":"account-a","weight":9}`)
+	writeLoginPolicyFixture(t, filepath.Join(dir, "codex-1234abcd-user@example.test-pro.json"), priorLoginPolicy)
+	record := codexLoginRecord(filepath.Base(path))
+	source, errCarry := carryLoginPolicy(path, record)
+	if errCarry != nil {
+		t.Fatal(errCarry)
+	}
+	want := []string{"quota_guard", "priority", "prefix", "disabled"}
+	if source == nil || !reflect.DeepEqual(source.carried, want) {
+		t.Fatalf("archived field provenance = %#v, want %v", source, want)
+	}
+	if record.Metadata["weight"] != float64(9) {
+		t.Fatal("same-file policy did not win")
+	}
+}
+
+func TestFileTokenStoreLoginPolicyRetirementFenceAllowsRestoredRefresh(t *testing.T) {
+	dir := t.TempDir()
+	name := "claude-restored@example.test.json"
+	path := filepath.Join(dir, name)
+	writeLoginPolicyFixture(t, loginRetirementFence(path), "")
+	writeLoginPolicyFixture(t, path, `{"type":"claude","email":"restored@example.test","access_token":"old-access"}`)
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	record := &coreauth.Auth{ID: name, Provider: "claude", Metadata: map[string]any{
+		"type": "claude", "email": "restored@example.test", "access_token": "new-access",
+	}}
+	savedPath, errSave := store.Save(context.Background(), record)
+	if errSave != nil || savedPath != path {
+		t.Fatalf("restored refresh = %q, %v", savedPath, errSave)
+	}
+	if readLoginPolicyFixture(t, path)["access_token"] != "new-access" {
+		t.Fatal("retirement fence blocked a restored credential's refresh")
+	}
+}
+
 func TestFileTokenStoreLoginPolicySaveFailureRetainsPrior(t *testing.T) {
 	dir := t.TempDir()
 	oldPath := filepath.Join(dir, "codex-1234abcd-user@example.test-pro.json")

@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 // PluginAuthParser parses auth JSON owned by plugin providers.
@@ -119,10 +120,15 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 
 func (s *FileTokenStore) saveLocked(ctx context.Context, path string, auth *cliproxyauth.Auth) (string, error) {
 	if !cliproxyauth.HasAuthCreationIntent(ctx) {
-		if _, errStat := os.Stat(loginRetirementFence(path)); errStat == nil {
-			return "", nil // A stale runtime snapshot must not resurrect a retired file.
-		} else if !os.IsNotExist(errStat) {
-			return "", fmt.Errorf("auth filestore: inspect retirement fence: %w", errStat)
+		if _, errStat := os.Stat(path); os.IsNotExist(errStat) {
+			if _, errFence := os.Stat(loginRetirementFence(path)); errFence == nil {
+				log.WithField("retired_file", filepath.Base(path)).Warn("OAuth credential write skipped: retirement fence prevents stale file recreation")
+				return "", nil
+			} else if !os.IsNotExist(errFence) {
+				return "", fmt.Errorf("auth filestore: inspect retirement fence: %w", errFence)
+			}
+		} else if errStat != nil {
+			return "", fmt.Errorf("auth filestore: inspect credential: %w", errStat)
 		}
 	}
 	var err error

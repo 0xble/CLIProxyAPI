@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -95,14 +96,14 @@ func carryLoginPolicy(path string, auth *coreauth.Auth) (*loginPolicySource, err
 	if source != nil {
 		policies = append(policies, source.metadata)
 	}
-	for _, policy := range policies {
+	for policyIndex, policy := range policies {
 		for _, key := range loginPolicyFields {
 			if _, explicit := auth.Metadata[key]; explicit {
 				continue
 			}
 			if value, exists := policy[key]; exists {
 				auth.Metadata[key] = value
-				if source != nil {
+				if source != nil && policyIndex > 0 {
 					source.carried = append(source.carried, key)
 				}
 			}
@@ -157,7 +158,7 @@ func loginAccountConflicts(provider string, auth *coreauth.Auth, candidate map[s
 	if candidateProvider := loginPolicyProvider(metadataStringValue(candidate, "type")); candidateProvider != "" && candidateProvider != provider {
 		return true
 	}
-	for _, key := range []string{"account_id", "account_uuid", "organization_uuid", "sub", "project_id", "email"} {
+	for _, key := range []string{"account_id", "account_uuid", "organization_uuid", "sub", "email"} {
 		left, right := metadataStringValue(auth.Metadata, key), metadataStringValue(candidate, key)
 		if storage, ok := auth.Storage.(*codex.CodexTokenStorage); ok && key == "account_id" && left == "" {
 			left = strings.TrimSpace(storage.AccountID)
@@ -177,6 +178,22 @@ func sameLoginAccount(provider, path string, auth *coreauth.Auth, candidatePath 
 		return false
 	}
 	incoming := auth.Metadata
+	leftEmail, rightEmail := metadataStringValue(incoming, "email"), metadataStringValue(candidate, "email")
+	// Workspace/account identifiers may be shared by distinct users.
+	if leftEmail != "" && rightEmail != "" && !strings.EqualFold(leftEmail, rightEmail) {
+		return false
+	}
+	if provider == "claude" && metadataStringValue(incoming, "organization_uuid") != "" && metadataStringValue(candidate, "organization_uuid") == "" {
+		// Mirror the legacy migrator: an org-less credential is ambiguous,
+		// except for the exact account-hashed predecessor of an org-hashed login.
+		account := metadataStringValue(incoming, "account_uuid")
+		organization := metadataStringValue(incoming, "organization_uuid")
+		if leftEmail == "" || account == "" || !strings.EqualFold(metadataStringValue(candidate, "account_uuid"), account) ||
+			!strings.EqualFold(filepath.Base(candidatePath), claude.CredentialFileName(leftEmail, "", account)) ||
+			!strings.EqualFold(filepath.Base(path), claude.CredentialFileName(leftEmail, organization, account)) {
+			return false
+		}
+	}
 	accountID := metadataStringValue(incoming, "account_id")
 	if storage, ok := auth.Storage.(*codex.CodexTokenStorage); ok && accountID == "" {
 		accountID = strings.TrimSpace(storage.AccountID)
