@@ -453,7 +453,7 @@ func TestSaveTokenRecord_SubjectOnlyReloginKeepsEmailCredential(t *testing.T) {
 	if saved["access_token"] != "new-token" || saved["prefix"] != "team" || saved["weight"] != float64(5) || saved["email"] != "a+b@example.com" {
 		t.Fatalf("saved credential = %#v, want new token with preserved settings and email", saved)
 	}
-	entries, errReadDir := os.ReadDir(authDir)
+	entries, errReadDir := filepath.Glob(filepath.Join(authDir, "*.json"))
 	if errReadDir != nil {
 		t.Fatalf("ReadDir error: %v", errReadDir)
 	}

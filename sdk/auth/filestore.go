@@ -13,8 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 // PluginAuthParser parses auth JSON owned by plugin providers.
@@ -76,6 +79,15 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}
+	caller := auth
+	auth = auth.Clone()
+	if storage, ok := auth.Storage.(*claude.ClaudeTokenStorage); ok && storage != nil {
+		// SetMetadata and SaveTokenToFile mutate storage too. Keep the supported
+		// Claude login transaction private until persistence succeeds; Codex's
+		// persistence helper already clones its concrete storage before saving.
+		storageCopy := *storage
+		auth.Storage = &storageCopy
+	}
 	cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)
 	if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
 		return "", fmt.Errorf("auth filestore: %w", errWeight)
@@ -103,6 +115,45 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
+	}
+
+	// A directory-wide process lock orders logins against runtime saves made by
+	// the serving process. The per-credential Codex lock remains the inner lock.
+	var savedPath string
+	err = codex.WithFileLock(filepath.Join(filepath.Dir(path), ".auth-store"), func() error {
+		var errSave error
+		savedPath, errSave = s.saveLocked(ctx, path, auth)
+		return errSave
+	})
+	// A nonempty path means persistence succeeded, even if subsequent archival
+	// failed. Reflect that partial success in the caller; validation/write errors
+	// and skipped runtime saves leave its metadata and runtime policy untouched.
+	if savedPath != "" {
+		*caller = *auth
+	}
+	return savedPath, err
+}
+
+func (s *FileTokenStore) saveLocked(ctx context.Context, path string, auth *cliproxyauth.Auth) (string, error) {
+	if !cliproxyauth.HasAuthCreationIntent(ctx) {
+		if _, errStat := os.Stat(path); os.IsNotExist(errStat) {
+			if _, errFence := os.Stat(loginRetirementFence(path)); errFence == nil {
+				log.WithField("retired_file", filepath.Base(path)).Warn("OAuth credential write skipped: retirement fence prevents stale file recreation")
+				return "", nil
+			} else if !os.IsNotExist(errFence) {
+				return "", fmt.Errorf("auth filestore: inspect retirement fence: %w", errFence)
+			}
+		} else if errStat != nil {
+			return "", fmt.Errorf("auth filestore: inspect credential: %w", errStat)
+		}
+	}
+	var err error
+	var policySource *loginPolicySource
+	if cliproxyauth.HasAuthCreationIntent(ctx) {
+		policySource, err = carryLoginPolicy(path, auth)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	// metadataSetter is a private interface for TokenStorage implementations that support metadata injection.
@@ -171,6 +222,14 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		auth.FileName = auth.ID
 	}
 
+	if errRetire := retireLoginPolicySource(path, policySource); errRetire != nil {
+		return path, errRetire
+	}
+	if cliproxyauth.HasAuthCreationIntent(ctx) {
+		if errRemove := os.Remove(loginRetirementFence(path)); errRemove != nil && !os.IsNotExist(errRemove) {
+			return path, fmt.Errorf("auth filestore: replacement saved but retirement fence cleanup failed: %w", errRemove)
+		}
+	}
 	return path, nil
 }
 

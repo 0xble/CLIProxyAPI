@@ -40,6 +40,11 @@ func FindMatchingLegacyCredential(ctx context.Context, store coreauth.Store, tar
 	if store == nil || !isHashedCredentialTarget(target) {
 		return nil, nil
 	}
+	if policyStore, ok := store.(interface{ CarriesLoginPolicy() bool }); ok && policyStore.CarriesLoginPolicy() {
+		// The shared file save seam reuses MatchesLegacyCredential to preserve
+		// operator metadata and archives only after a successful, identity-safe save.
+		return nil, nil
+	}
 
 	records, errList := store.List(ctx)
 	if errList != nil {
@@ -49,6 +54,22 @@ func FindMatchingLegacyCredential(ctx context.Context, store coreauth.Store, tar
 		return nil, fmt.Errorf("list Claude credentials for legacy migration: %w", errList)
 	}
 
+	for _, candidate := range records {
+		if MatchesLegacyCredential(target, candidate) {
+			return candidate, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// MatchesLegacyCredential reports whether candidate is the identity-verified
+// legacy predecessor accepted by Claude's filename migration. Callers may apply
+// additional identity-conflict vetoes before using this filename evidence.
+func MatchesLegacyCredential(target, candidate *coreauth.Auth) bool {
+	if !isHashedCredentialTarget(target) {
+		return false
+	}
 	targetEmail := metadataString(target.Metadata, "email")
 	targetOrganization := metadataString(target.Metadata, "organization_uuid")
 	targetAccount := metadataString(target.Metadata, "account_uuid")
@@ -58,39 +79,36 @@ func FindMatchingLegacyCredential(ctx context.Context, store coreauth.Store, tar
 		accountFileName = CredentialFileName(targetEmail, "", targetAccount)
 	}
 
-	for _, candidate := range records {
-		if candidate == nil || !strings.EqualFold(strings.TrimSpace(candidate.Provider), "claude") {
-			continue
-		}
-		candidateFileName := strings.TrimSpace(candidate.FileName)
-		if candidateFileName == "" {
-			candidateFileName = strings.TrimSpace(candidate.ID)
-		}
-		candidateBaseName := filepath.Base(candidateFileName)
-		isEmailLegacy := strings.EqualFold(candidateBaseName, legacyFileName)
-		isAccountPredecessor := accountFileName != "" && strings.EqualFold(candidateBaseName, accountFileName)
-		if !isEmailLegacy && !isAccountPredecessor {
-			continue
-		}
-
-		candidateOrganization := metadataString(candidate.Metadata, "organization_uuid")
-		candidateAccount := metadataString(candidate.Metadata, "account_uuid")
-		switch {
-		case targetOrganization != "":
-			if candidateOrganization != "" && strings.EqualFold(candidateOrganization, targetOrganization) {
-				return candidate, nil
-			}
-			if candidateOrganization == "" && isAccountPredecessor && candidateAccount != "" && strings.EqualFold(candidateAccount, targetAccount) {
-				return candidate, nil
-			}
-		case isEmailLegacy && candidateOrganization == "" && targetAccount != "":
-			if candidateAccount != "" && strings.EqualFold(candidateAccount, targetAccount) {
-				return candidate, nil
-			}
-		}
+	if candidate == nil || !strings.EqualFold(strings.TrimSpace(candidate.Provider), "claude") {
+		return false
+	}
+	candidateFileName := strings.TrimSpace(candidate.FileName)
+	if candidateFileName == "" {
+		candidateFileName = strings.TrimSpace(candidate.ID)
+	}
+	candidateBaseName := filepath.Base(candidateFileName)
+	isEmailLegacy := strings.EqualFold(candidateBaseName, legacyFileName)
+	isAccountPredecessor := accountFileName != "" && strings.EqualFold(candidateBaseName, accountFileName)
+	if !isEmailLegacy && !isAccountPredecessor {
+		return false
 	}
 
-	return nil, nil
+	candidateOrganization := metadataString(candidate.Metadata, "organization_uuid")
+	candidateAccount := metadataString(candidate.Metadata, "account_uuid")
+	switch {
+	case targetOrganization != "":
+		if candidateOrganization != "" && strings.EqualFold(candidateOrganization, targetOrganization) {
+			return true
+		}
+		if candidateOrganization == "" && isAccountPredecessor && candidateAccount != "" && strings.EqualFold(candidateAccount, targetAccount) {
+			return true
+		}
+	case isEmailLegacy && candidateOrganization == "" && targetAccount != "":
+		if candidateAccount != "" && strings.EqualFold(candidateAccount, targetAccount) {
+			return true
+		}
+	}
+	return false
 }
 
 func isHashedCredentialTarget(target *coreauth.Auth) bool {
