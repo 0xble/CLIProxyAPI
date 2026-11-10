@@ -1,5 +1,15 @@
 # Maintenance
 
+## Current candidate: v8.0.63 and Claude Fable 5.2
+
+Upstream release `v8.0.63` is `6db7d4b839d86c5b24e17bbe73bcd4db18ef1b1a` and includes merged [PR #7392](https://github.com/router-for-me/CLIProxyAPI/pull/7392), `1649a002aab0c00d9d987b715aa3f195fc1c7f0c`. At verification time this tag equals upstream `main`; no unreleased cherry-pick is needed. The local serving v8.0.61 build reproduces the Fable rejection: HTTP 400, Claude Code 2.1.280 unsupported (2.1.290 required).
+
+The selected solution is to adopt the measured upstream 2.1.321 fingerprint and beta assembly rather than override a version header locally. Root `AGENTS.md` was read at this revision; root `CONTRIBUTING.md` is absent. Release notes for v8.0.62 and v8.0.63 were inspected. Merge both release tags over fork main `232f0bf6a95906e4ead7800529167f19d09dbb73`, preserving CPA-001 through CPA-007 and read-only management. Their production overlays remain present, including the reserve gates in scheduler and selector, final-request cache observations, and the Claude thinking-budget repair.
+
+The only conflict is the HTTP Responses interrupt test fixture. Released v8.0.62 now supplies cancellation-channel synchronization, a `sync.Once` close guard, and a cancellation-before-incomplete ordering regression, superseding the fork's cancellation-channel prerequisite. Adopt that entire upstream test file; no assertion is weakened or skipped. Keep the separate hijacked-websocket-handler teardown fix. The three upstream PR-guard workflows remain absent, as required for fork PRs targeting `main`.
+
+Activation is separately authorized for the local CPA service only. Use the existing installer on the published merged fork SHA, preserve v8.0.61 for rollback, then verify real Fable 5.2, Opus 5.5 and Codex Responses inference. Source gates are `go build ./...`, executor/auth tests and `bin/ci gate`.
+
 ## Background
 
 Maintained fork: `0xble/CLIProxyAPI` of `router-for-me/CLIProxyAPI`.
