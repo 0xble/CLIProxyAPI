@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"regexp"
@@ -11,6 +12,31 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
+
+type requestScopedErrorConfigContextKey struct{}
+
+// WithRequestScopedErrorConfig stores the runtime config snapshot on ctx so
+// usage reporters can evaluate request-scoped error rules when publishing
+// attempt failures.
+func WithRequestScopedErrorConfig(ctx context.Context, cfg *internalconfig.Config) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if cfg == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, requestScopedErrorConfigContextKey{}, cfg)
+}
+
+// RequestScopedErrorConfigFromContext retrieves the runtime config snapshot
+// stored by WithRequestScopedErrorConfig.
+func RequestScopedErrorConfigFromContext(ctx context.Context) *internalconfig.Config {
+	if ctx == nil {
+		return nil
+	}
+	cfg, _ := ctx.Value(requestScopedErrorConfigContextKey{}).(*internalconfig.Config)
+	return cfg
+}
 
 // Request-scoped error actions.
 const (
@@ -64,6 +90,104 @@ func (m *Manager) runtimeConfigSnapshot() *internalconfig.Config {
 	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	return cfg
+}
+
+func (m *Manager) requestScopedErrorConfig(ctx context.Context) *internalconfig.Config {
+	if cfg := RequestScopedErrorConfigFromContext(ctx); cfg != nil {
+		return cfg
+	}
+	return m.runtimeConfigSnapshot()
+}
+
+func cloneRequestScopedErrorRules(rules []internalconfig.RequestScopedErrorRule) []internalconfig.RequestScopedErrorRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]internalconfig.RequestScopedErrorRule, len(rules))
+	for i, r := range rules {
+		out[i] = internalconfig.RequestScopedErrorRule{
+			Status:   r.Status,
+			Action:   r.Action,
+			Cooldown: r.Cooldown,
+		}
+		if len(r.Match) > 0 {
+			out[i].Match = append([]string(nil), r.Match...)
+		}
+		if len(r.MatchRegexr) > 0 {
+			out[i].MatchRegexr = append([]string(nil), r.MatchRegexr...)
+		}
+	}
+	return out
+}
+
+// ResolveRequestScopedErrorRules extracts and deep-copies the effective
+// RequestScopedErrorRule list for an auth and config snapshot.
+func ResolveRequestScopedErrorRules(auth *Auth, cfg *internalconfig.Config) []internalconfig.RequestScopedErrorRule {
+	return cloneRequestScopedErrorRules(extractRequestScopedErrorRules(auth, cfg))
+}
+
+// MatchRequestScopedErrorRules evaluates an error against a pre-resolved rule list.
+func MatchRequestScopedErrorRules(rules []internalconfig.RequestScopedErrorRule, err error) (string, bool) {
+	action, _, ok := matchRequestScopedErrorRules(rules, err)
+	return action, ok
+}
+
+// matchRequestScopedErrorRules is the cooldown-aware matcher (CPA-001). A rule with an
+// invalid cooldown is ignored, so usage classification and execution agree.
+func matchRequestScopedErrorRules(rules []internalconfig.RequestScopedErrorRule, err error) (string, time.Duration, bool) {
+	if err == nil || len(rules) == 0 || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
+		return "", 0, false
+	}
+
+	statusCode := statusCodeFromError(err)
+	body := extractErrorBody(err)
+
+	for _, rule := range rules {
+		if rule.Status <= 0 || rule.Status != statusCode {
+			continue
+		}
+		if len(rule.Match) == 0 && len(rule.MatchRegexr) == 0 {
+			continue
+		}
+
+		matched := false
+		for _, substr := range rule.Match {
+			if substr != "" && strings.Contains(body, substr) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			for _, pattern := range rule.MatchRegexr {
+				if pattern != "" {
+					if re, errCompile := regexp.Compile(pattern); errCompile == nil && re.MatchString(body) {
+						matched = true
+						break
+					}
+				}
+			}
+		}
+		if !matched {
+			continue
+		}
+
+		action := strings.ToLower(strings.TrimSpace(rule.Action))
+		switch action {
+		case RequestScopedActionStop,
+			RequestScopedActionStopAndCooldown,
+			RequestScopedActionContinue,
+			RequestScopedActionContinueAndCooldown:
+			cooldown, okCooldown := internalconfig.ParseRequestScopedErrorCooldown(rule.Cooldown)
+			if !okCooldown {
+				continue
+			}
+			return action, cooldown, true
+		default:
+			continue
+		}
+	}
+
+	return "", 0, false
 }
 
 // extractRequestScopedErrorRules retrieves the configured RequestScopedErrorRule list for an auth.
@@ -182,67 +306,21 @@ func extractErrorBody(err error) string {
 	return err.Error()
 }
 
-// matchRequestScopedErrorAction evaluates an error against the auth's RequestScopedErrors rules.
-// If a rule matches, it returns (action, cooldown, true). Invalid cooldown values ignore the rule.
-// If no rule matches, it returns ("", 0, false).
+// MatchRequestScopedErrorAction evaluates an error against the auth's RequestScopedErrors rules.
+// If a rule matches, it returns (action, true).
+// If no rule matches, it returns ("", false).
+func MatchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Config) (string, bool) {
+	action, _, ok := matchRequestScopedErrorAction(auth, err, cfg)
+	return action, ok
+}
+
+// matchRequestScopedErrorAction returns (action, cooldown, true) for the first matching rule.
+// Invalid cooldown values ignore the rule. If no rule matches, it returns ("", 0, false).
 func matchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Config) (string, time.Duration, bool) {
 	if err == nil || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
 		return "", 0, false
 	}
-	rules := extractRequestScopedErrorRules(auth, cfg)
-	if len(rules) == 0 {
-		return "", 0, false
-	}
-
-	statusCode := statusCodeFromError(err)
-	body := extractErrorBody(err)
-
-	for _, rule := range rules {
-		if rule.Status <= 0 || rule.Status != statusCode {
-			continue
-		}
-		if len(rule.Match) == 0 && len(rule.MatchRegexr) == 0 {
-			continue
-		}
-
-		matched := false
-		for _, substr := range rule.Match {
-			if substr != "" && strings.Contains(body, substr) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			for _, pattern := range rule.MatchRegexr {
-				if pattern != "" {
-					if re, errCompile := regexp.Compile(pattern); errCompile == nil && re.MatchString(body) {
-						matched = true
-						break
-					}
-				}
-			}
-		}
-		if !matched {
-			continue
-		}
-
-		action := strings.ToLower(strings.TrimSpace(rule.Action))
-		switch action {
-		case RequestScopedActionStop,
-			RequestScopedActionStopAndCooldown,
-			RequestScopedActionContinue,
-			RequestScopedActionContinueAndCooldown:
-			cooldown, okCooldown := internalconfig.ParseRequestScopedErrorCooldown(rule.Cooldown)
-			if !okCooldown {
-				continue
-			}
-			return action, cooldown, true
-		default:
-			continue
-		}
-	}
-
-	return "", 0, false
+	return matchRequestScopedErrorRules(extractRequestScopedErrorRules(auth, cfg), err)
 }
 
 func applyRequestScopedActionToResult(action string, cooldown time.Duration, okAction bool, result *Result) {

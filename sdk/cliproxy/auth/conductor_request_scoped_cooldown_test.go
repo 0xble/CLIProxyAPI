@@ -261,3 +261,30 @@ func assertExplicitRequestScopedCooldown(t *testing.T, configured string, parsed
 		t.Fatalf("auth explicit cooldown = unavailable %v, next %v; want about %v", authSnapshot.Unavailable, authSnapshot.NextRetryAfter, want)
 	}
 }
+
+func TestRequestScopedCooldown_ResolvedRulesKeepCooldownAndAgreeWithExecution(t *testing.T) {
+	auth := &Auth{Metadata: map[string]any{
+		"request_scoped_errors": []internalconfig.RequestScopedErrorRule{
+			{Status: 400, Match: []string{"credit exhausted"}, Action: RequestScopedActionContinueAndCooldown, Cooldown: "not-a-duration"},
+			{Status: 400, Match: []string{"credit exhausted"}, Action: RequestScopedActionStopAndCooldown, Cooldown: "1h"},
+		},
+	}}
+	rules := ResolveRequestScopedErrorRules(auth, nil)
+	if len(rules) != 2 || rules[1].Cooldown != "1h" {
+		t.Fatalf("resolved rules = %#v; want both rules with cooldown preserved", rules)
+	}
+	matchedErr := requestScopedCooldownError{status: 400, body: "credit exhausted"}
+
+	usageAction, usageOK := MatchRequestScopedErrorRules(rules, matchedErr)
+	execAction, execCooldown, execOK := matchRequestScopedErrorAction(auth, matchedErr, nil)
+	publicAction, publicOK := MatchRequestScopedErrorAction(auth, matchedErr, nil)
+	if !usageOK || !execOK || !publicOK {
+		t.Fatalf("matches = usage %v, exec %v, public %v; want all true", usageOK, execOK, publicOK)
+	}
+	if usageAction != RequestScopedActionStopAndCooldown || execAction != usageAction || publicAction != usageAction {
+		t.Fatalf("actions = usage %q, exec %q, public %q; want %q (invalid-cooldown rule ignored)", usageAction, execAction, publicAction, RequestScopedActionStopAndCooldown)
+	}
+	if execCooldown != time.Hour {
+		t.Fatalf("exec cooldown = %v; want 1h", execCooldown)
+	}
+}
