@@ -171,3 +171,82 @@ func TestCodexDuplexSummaryCredentialFailuresThroughManager(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexDuplexSummaryRequestScopedRuleAppliesCooldownThroughManager(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"credit exhausted"}}`))
+			return
+		}
+		c, errUpgrade := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Error(errUpgrade)
+			return
+		}
+		defer func() { _ = c.Close() }()
+		if _, _, errRead := c.ReadMessage(); errRead != nil {
+			t.Error(errRead)
+			return
+		}
+		for _, payload := range []string{`{"type":"response.created","response":{"id":"r1"}}`, `{"type":"response.completed","response":{"id":"r1","output":[]}}`} {
+			if errWrite := c.WriteMessage(websocket.TextMessage, []byte(payload)); errWrite != nil {
+				t.Error(errWrite)
+				return
+			}
+		}
+		_, _, _ = c.ReadMessage()
+	}))
+	defer upstream.Close()
+	const id, model = "duplex-summary-scoped-account", "duplex-summary-scoped-model"
+	cfg := &config.Config{CodexKey: []config.CodexKey{{APIKey: "test-key", BaseURL: upstream.URL, Models: []config.CodexModel{{Name: model, IsCompat: true}}}}}
+	cfg.Codex.ResponseSteering = true
+	cfg.CodexResponseSteering = true
+	manager := auth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	exec := NewCodexAutoExecutor(cfg)
+	manager.RegisterExecutor(exec)
+	defer exec.CloseExecutionSession("summary-scoped-session")
+	if _, errRegister := manager.Register(context.Background(), &auth.Auth{
+		ID: id, Provider: "codex", Status: auth.StatusActive,
+		Attributes: map[string]string{"api_key": "test-key", "base_url": upstream.URL, "websockets": "true"},
+		Metadata: map[string]any{"request_scoped_errors": []config.RequestScopedErrorRule{{
+			Status: http.StatusBadRequest, Match: []string{"credit exhausted"}, Action: auth.RequestScopedActionStopAndCooldown, Cooldown: "1h",
+		}}},
+	}); errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: model, IsCompat: true}})
+	defer registry.GetGlobalRegistry().UnregisterClient(id)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	input := make(chan core.WebsocketInput, 1)
+	ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
+	stream, errStream := manager.ExecuteStream(ctx, []string{"codex"}, core.Request{Model: model, Payload: []byte(`{"model":"duplex-summary-scoped-model","input":[]}`)}, core.Options{SourceFormat: translator.FormatOpenAIResponse, Metadata: map[string]any{core.ExecutionSessionMetadataKey: "summary-scoped-session"}})
+	if errStream != nil {
+		t.Fatal(errStream)
+	}
+	var terminal error
+	for chunk := range stream.Chunks {
+		if ojson.GetBytes(chunk.Payload, "type").String() == "response.completed" {
+			input <- core.WebsocketInput{Payload: []byte(`{"type":"response.create","input":[{"role":"user","content":"history"},{"type":"compaction_trigger"}]}`)}
+		}
+		if chunk.Err != nil {
+			terminal = chunk.Err
+		}
+	}
+	var statusHolder interface{ StatusCode() int }
+	if !errors.As(terminal, &statusHolder) || statusHolder.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("terminal error = %v, want HTTP 400 stream error", terminal)
+	}
+	current, ok := manager.GetByID(id)
+	if !ok {
+		t.Fatal("account disappeared")
+	}
+	state := current.ModelStates[model]
+	now := time.Now()
+	if state == nil || !state.Unavailable || state.NextRetryAfter.Before(now.Add(59*time.Minute)) || state.NextRetryAfter.After(now.Add(61*time.Minute)) {
+		t.Fatalf("matched summary rule did not apply its 1h cooldown: %+v", state)
+	}
+}

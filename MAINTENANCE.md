@@ -2,7 +2,7 @@
 
 ## Current candidate: v8.0.64
 
-Upstream release `v8.0.64` is `905637daa3f2fae4dcacf50164dac15ad43ed5c2`. It is merged over fork main `baa08734d01e9f440879b1546dce1666b5852be2`, which is v8.0.63 plus CPA-008. CPA-001 through CPA-008 and read-only management are preserved, along with the hijacked-websocket teardown test fix. The release note and the full summary are in the release history below.
+Upstream release `v8.0.64` is `905637daa3f2fae4dcacf50164dac15ad43ed5c2`. It is merged over fork main `baa08734d01e9f440879b1546dce1666b5852be2`, which is v8.0.63 plus CPA-008. CPA-001 through CPA-008 and read-only management are preserved, along with the hijacked-websocket teardown test fix. CPA-009 is new: it routes rule-matched duplex local-compaction failures from upstream #7413 to the conductor so request-scoped cooldowns still apply. The release note and the full summary are in the release history below.
 
 The only conflict is `sdk/cliproxy/auth/conductor_request_scoped_errors.go`. Upstream #7397 resolves request-scoped rules once per attempt for usage `fail.code`. The fork's CPA-001 per-rule `cooldown` is carried through that resolved list, and 1 cooldown-aware matcher serves both usage classification and execution. A rule with an invalid cooldown is therefore ignored consistently. `TestRequestScopedCooldown_ResolvedRulesKeepCooldownAndAgreeWithExecution` pins this, and no existing assertion changes.
 
@@ -128,7 +128,15 @@ This fork supplies the local gateway build from fork `main` and tracks upstream 
 - Verification: `HEAVY_SLOT_URGENCY=urgent env go test ./sdk/auth/... ./internal/auth/claude/... ./internal/auth/codex/... ./internal/api/handlers/management/... -count=1`, `go build ./...`, and the exact-head `ci-gate` wrapper before promotion. Source-only draft delivery does not authorize install, restart or provider canaries.
 - Retirement condition: retire only when a released upstream save path preserves this complete policy, precedence, identity-isolation and safe-retirement regression contract. Source rollback is a focused revert; archived credentials require explicit operator restoration, never automatic reactivation. A leftover `.retired` fence blocks only recreation of a missing JSON file, not refreshes of a restored one.
 
-Use stable IDs `CPA-009` and onward for future logical patches.
+### CPA-009 — apply request-scoped rules to duplex local-compaction failures
+
+- Required behavior: upstream v8.0.64 local compaction for compatible Responses endpoints (#7413) can run a summary HTTP request inside an open Codex duplex session. When that request fails with a status other than 401, 403 or 429 and a configured request-scoped rule matches, the failure becomes a stream error, so the conductor applies the rule's action and CPA-001 cooldown, the same as on the non-duplex path. Unmatched failures keep upstream's in-stream error event and keep the session open.
+- Why: upstream emitted every other summary failure as a downstream payload only. A matching rule, such as this Mac's `codex-api-key` 400 `cannot be used for Codex usage` continue-and-cooldown 1h, was never applied, so the credential stayed selectable while usage classification reported a forced cooldown.
+- Source surfaces: the compaction error branch in `internal/runtime/executor/codex_websockets_duplex.go`, which uses the exported `MatchRequestScopedErrorAction` with the attempt's `RequestScopedErrorConfigFromContext`.
+- Durable regression: `TestCodexDuplexSummaryRequestScopedRuleAppliesCooldownThroughManager` in `internal/runtime/executor/codex_websockets_duplex_health_test.go` drives a real manager duplex session to a 400 summary failure with a matching stop-and-cooldown 1h rule and asserts the HTTP 400 stream error and about 1h of model cooldown. It fails without the patch: no stream error reaches the conductor.
+- Retirement condition: retire when a released upstream duplex compaction path hands rule-matched summary failures to the conductor and passes this regression.
+
+Use stable IDs `CPA-010` and onward for future logical patches.
 Upstream maintenance-contract issue/PR associations: none found when checked 2026-09-13.
 Retain this contract while maintaining the fork. Retire behavioral patches only after a released upstream implementation passes their complete regression contract.
 

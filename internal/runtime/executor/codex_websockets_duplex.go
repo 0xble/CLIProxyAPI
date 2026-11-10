@@ -549,6 +549,13 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						failWithClassification(errCompact, true)
 						return false
 					}
+					// A configured request-scoped rule owns this failure's credential
+					// policy. Return it as a stream error so the conductor applies the
+					// rule's action and cooldown, exactly as on the non-duplex path.
+					if _, matched := cliproxyauth.MatchRequestScopedErrorAction(auth, errCompact, cliproxyauth.RequestScopedErrorConfigFromContext(ctx)); matched {
+						failWithClassification(errCompact, true)
+						return false
+					}
 					errType := "server_error"
 					if status >= 400 && status < 500 {
 						errType = "invalid_request_error"
