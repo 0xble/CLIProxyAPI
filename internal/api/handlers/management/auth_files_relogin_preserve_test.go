@@ -245,6 +245,7 @@ func TestSaveTokenRecord_MigratesMatchingLegacyClaudeCredential(t *testing.T) {
 		"access_token":  "new-token",
 		"refresh_token": "new-refresh",
 		"prefix":        "team",
+		"proxy_url":     "http://127.0.0.1:8080",
 		"disabled":      true,
 		"weight":        float64(5),
 	} {
@@ -252,10 +253,6 @@ func TestSaveTokenRecord_MigratesMatchingLegacyClaudeCredential(t *testing.T) {
 			t.Errorf("%s = %#v, want %#v", key, got, want)
 		}
 	}
-	if _, copied := saved["proxy_url"]; copied {
-		t.Fatal("legacy migration copied a non-policy field")
-	}
-
 }
 
 func TestSaveTokenRecord_MigratesMatchingLegacyXAICredential(t *testing.T) {

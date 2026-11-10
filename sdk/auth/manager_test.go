@@ -184,6 +184,7 @@ func TestManagerLogin_MigratesMatchingLegacyClaudeCredential(t *testing.T) {
 	for key, want := range map[string]any{
 		"access_token": "new-token",
 		"prefix":       "team",
+		"proxy_url":    "http://127.0.0.1:8080",
 		"disabled":     true,
 		"weight":       float64(5),
 	} {
@@ -191,10 +192,6 @@ func TestManagerLogin_MigratesMatchingLegacyClaudeCredential(t *testing.T) {
 			t.Errorf("%s = %#v, want %#v", key, got, want)
 		}
 	}
-	if _, copied := saved["proxy_url"]; copied {
-		t.Fatal("legacy migration copied a non-policy field")
-	}
-
 }
 
 func TestManagerLogin_ReloginKeepsCanonicalXAICredential(t *testing.T) {

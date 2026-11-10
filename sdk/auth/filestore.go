@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -78,6 +79,15 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}
+	caller := auth
+	auth = auth.Clone()
+	if storage, ok := auth.Storage.(*claude.ClaudeTokenStorage); ok && storage != nil {
+		// SetMetadata and SaveTokenToFile mutate storage too. Keep the supported
+		// Claude login transaction private until persistence succeeds; Codex's
+		// persistence helper already clones its concrete storage before saving.
+		storageCopy := *storage
+		auth.Storage = &storageCopy
+	}
 	cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)
 	if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
 		return "", fmt.Errorf("auth filestore: %w", errWeight)
@@ -115,6 +125,12 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		savedPath, errSave = s.saveLocked(ctx, path, auth)
 		return errSave
 	})
+	// A nonempty path means persistence succeeded, even if subsequent archival
+	// failed. Reflect that partial success in the caller; validation/write errors
+	// and skipped runtime saves leave its metadata and runtime policy untouched.
+	if savedPath != "" {
+		*caller = *auth
+	}
 	return savedPath, err
 }
 

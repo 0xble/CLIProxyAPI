@@ -76,6 +76,11 @@ func carryLoginPolicy(path string, auth *coreauth.Auth) (*loginPolicySource, err
 		if sameLoginFile(candidatePath, path) {
 			continue
 		}
+		// Only Codex and Claude have rename semantics owned by this seam.
+		// Plugin parent/project siblings and other providers are not migrations.
+		if provider != "codex" && provider != "claude" {
+			continue
+		}
 		metadata, errRead := readLoginPolicy(candidatePath)
 		if errRead != nil {
 			// Unknown/unreadable credentials cannot be established as the same
@@ -108,6 +113,15 @@ func carryLoginPolicy(path string, auth *coreauth.Auth) (*loginPolicySource, err
 				}
 			}
 		}
+	}
+	if source != nil && matchesClaudeLegacySource(path, auth, source.path, source.metadata) {
+		// Preserve upstream's richer operator configuration only for its exact
+		// identity-verified legacy predecessor. Never pre-merge token payloads
+		// or inject metadata into shared caller storage before validation.
+		mergeTarget := *auth
+		mergeTarget.Storage = nil
+		coreauth.MergeExistingAuthMetadata(&mergeTarget, source.metadata)
+		auth.Metadata = mergeTarget.Metadata
 	}
 	if value, exists := auth.Metadata["disabled"]; exists {
 		disabled, ok := value.(bool)
@@ -183,15 +197,17 @@ func sameLoginAccount(provider, path string, auth *coreauth.Auth, candidatePath 
 	if leftEmail != "" && rightEmail != "" && !strings.EqualFold(leftEmail, rightEmail) {
 		return false
 	}
-	if provider == "claude" && metadataStringValue(incoming, "organization_uuid") != "" && metadataStringValue(candidate, "organization_uuid") == "" {
-		// Mirror the legacy migrator: an org-less credential is ambiguous,
-		// except for the exact account-hashed predecessor of an org-hashed login.
-		account := metadataStringValue(incoming, "account_uuid")
-		organization := metadataStringValue(incoming, "organization_uuid")
-		if leftEmail == "" || account == "" || !strings.EqualFold(metadataStringValue(candidate, "account_uuid"), account) ||
-			!strings.EqualFold(filepath.Base(candidatePath), claude.CredentialFileName(leftEmail, "", account)) ||
-			!strings.EqualFold(filepath.Base(path), claude.CredentialFileName(leftEmail, organization, account)) {
-			return false
+	if provider == "claude" {
+		legacyName := claude.CredentialFileName(leftEmail, "", "")
+		// Use upstream's authoritative filename/account rule for email-only
+		// legacy files and org-less predecessors of org-scoped logins. Email
+		// alone cannot prove an account-hashed target owns the old credential.
+		if strings.EqualFold(filepath.Base(candidatePath), legacyName) ||
+			(metadataStringValue(incoming, "organization_uuid") != "" && metadataStringValue(candidate, "organization_uuid") == "") {
+			if loginAccountConflicts(provider, auth, candidate) {
+				return false
+			}
+			return matchesClaudeLegacySource(path, auth, candidatePath, candidate)
 		}
 	}
 	accountID := metadataStringValue(incoming, "account_id")
@@ -229,6 +245,16 @@ func sameLoginAccount(provider, path string, auth *coreauth.Auth, candidatePath 
 	}
 	left, right := metadataStringValue(incoming, "email"), metadataStringValue(candidate, "email")
 	return left != "" && right != "" && strings.EqualFold(left, right)
+}
+
+func matchesClaudeLegacySource(path string, auth *coreauth.Auth, candidatePath string, metadata map[string]any) bool {
+	if loginPolicyProvider(auth.Provider) != "claude" {
+		return false
+	}
+	target := *auth
+	target.FileName = filepath.Base(path)
+	candidate := &coreauth.Auth{Provider: "claude", FileName: filepath.Base(candidatePath), Metadata: metadata}
+	return claude.MatchesLegacyCredential(&target, candidate)
 }
 
 func codexLoginHash(path string) string {

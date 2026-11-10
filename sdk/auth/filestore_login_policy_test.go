@@ -588,8 +588,19 @@ func TestFileTokenStoreLoginPolicyRetryFinishesRetirement(t *testing.T) {
 	store := NewFileTokenStore()
 	store.SetBaseDir(dir)
 	name := "codex-1234abcd-user@example.test-promax.json"
-	if path, errSave := store.Save(coreauth.WithAuthCreationIntent(context.Background()), codexLoginRecord(name)); errSave == nil || path == "" {
+	record := codexLoginRecord(name)
+	path, errSave := store.Save(coreauth.WithAuthCreationIntent(context.Background()), record)
+	if errSave == nil || path == "" {
 		t.Fatalf("want partial-success retirement error, got %q %v", path, errSave)
+	}
+	if !record.Disabled || record.Status != coreauth.StatusDisabled || record.Prefix != "guarded" || record.Metadata["weight"] != float64(1) || record.Attributes[coreauth.AttributePath] != path {
+		t.Fatal("partial-success save did not publish persisted policy to caller")
+	}
+	if readLoginPolicyFixture(t, path)["access_token"] != "new-access" {
+		t.Fatal("partial-success replacement was not persisted")
+	}
+	if _, errStat := os.Stat(oldPath); errStat != nil {
+		t.Fatal("failed archive lost predecessor", errStat)
 	}
 	if errRemove := os.Remove(backupDir); errRemove != nil {
 		t.Fatal(errRemove)
