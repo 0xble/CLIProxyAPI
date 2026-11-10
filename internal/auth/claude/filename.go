@@ -40,6 +40,11 @@ func FindMatchingLegacyCredential(ctx context.Context, store coreauth.Store, tar
 	if store == nil || !isHashedCredentialTarget(target) {
 		return nil, nil
 	}
+	if policyStore, ok := store.(interface{ CarriesLoginPolicy() bool }); ok && policyStore.CarriesLoginPolicy() {
+		// The shared file save seam performs identity-safe, allowlisted policy
+		// inheritance and archives the predecessor only after a successful save.
+		return nil, nil
+	}
 
 	records, errList := store.List(ctx)
 	if errList != nil {

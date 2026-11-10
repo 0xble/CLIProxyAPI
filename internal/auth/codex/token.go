@@ -293,6 +293,13 @@ func (ts *CodexTokenStorage) SaveTokenToFile(authFilePath string) error {
 			}
 			merged := MergeWithDiskMap(diskMap, data)
 			if ts.ReplaceCredentials {
+				// Explicit login policy clears must survive MergeWithDiskMap's
+				// refresh-friendly treatment of nil and empty values.
+				for _, key := range []string{"quota_guard", "weight", "priority", "prefix", "disabled"} {
+					if value, exists := ts.Metadata[key]; exists {
+						merged[key] = value
+					}
+				}
 				for _, key := range codexOuterCredentialKeys {
 					if value, exists := data[key]; exists {
 						merged[key] = value

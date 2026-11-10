@@ -245,7 +245,6 @@ func TestSaveTokenRecord_MigratesMatchingLegacyClaudeCredential(t *testing.T) {
 		"access_token":  "new-token",
 		"refresh_token": "new-refresh",
 		"prefix":        "team",
-		"proxy_url":     "http://127.0.0.1:8080",
 		"disabled":      true,
 		"weight":        float64(5),
 	} {
@@ -253,6 +252,10 @@ func TestSaveTokenRecord_MigratesMatchingLegacyClaudeCredential(t *testing.T) {
 			t.Errorf("%s = %#v, want %#v", key, got, want)
 		}
 	}
+	if _, copied := saved["proxy_url"]; copied {
+		t.Fatal("legacy migration copied a non-policy field")
+	}
+
 }
 
 func TestSaveTokenRecord_MigratesMatchingLegacyXAICredential(t *testing.T) {
@@ -453,7 +456,7 @@ func TestSaveTokenRecord_SubjectOnlyReloginKeepsEmailCredential(t *testing.T) {
 	if saved["access_token"] != "new-token" || saved["prefix"] != "team" || saved["weight"] != float64(5) || saved["email"] != "a+b@example.com" {
 		t.Fatalf("saved credential = %#v, want new token with preserved settings and email", saved)
 	}
-	entries, errReadDir := os.ReadDir(authDir)
+	entries, errReadDir := filepath.Glob(filepath.Join(authDir, "*.json"))
 	if errReadDir != nil {
 		t.Fatalf("ReadDir error: %v", errReadDir)
 	}

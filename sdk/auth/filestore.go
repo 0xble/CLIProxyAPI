@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -105,6 +106,34 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
 
+	// A directory-wide process lock orders logins against runtime saves made by
+	// the serving process. The per-credential Codex lock remains the inner lock.
+	var savedPath string
+	err = codex.WithFileLock(filepath.Join(filepath.Dir(path), ".auth-store"), func() error {
+		var errSave error
+		savedPath, errSave = s.saveLocked(ctx, path, auth)
+		return errSave
+	})
+	return savedPath, err
+}
+
+func (s *FileTokenStore) saveLocked(ctx context.Context, path string, auth *cliproxyauth.Auth) (string, error) {
+	if !cliproxyauth.HasAuthCreationIntent(ctx) {
+		if _, errStat := os.Stat(loginRetirementFence(path)); errStat == nil {
+			return "", nil // A stale runtime snapshot must not resurrect a retired file.
+		} else if !os.IsNotExist(errStat) {
+			return "", fmt.Errorf("auth filestore: inspect retirement fence: %w", errStat)
+		}
+	}
+	var err error
+	var policySource *loginPolicySource
+	if cliproxyauth.HasAuthCreationIntent(ctx) {
+		policySource, err = carryLoginPolicy(path, auth)
+		if err != nil {
+			return "", err
+		}
+	}
+
 	// metadataSetter is a private interface for TokenStorage implementations that support metadata injection.
 	type metadataSetter interface {
 		SetMetadata(map[string]any)
@@ -171,6 +200,14 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		auth.FileName = auth.ID
 	}
 
+	if errRetire := retireLoginPolicySource(path, policySource); errRetire != nil {
+		return path, errRetire
+	}
+	if cliproxyauth.HasAuthCreationIntent(ctx) {
+		if errRemove := os.Remove(loginRetirementFence(path)); errRemove != nil && !os.IsNotExist(errRemove) {
+			return path, fmt.Errorf("auth filestore: replacement saved but retirement fence cleanup failed: %w", errRemove)
+		}
+	}
 	return path, nil
 }
 

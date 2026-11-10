@@ -184,7 +184,6 @@ func TestManagerLogin_MigratesMatchingLegacyClaudeCredential(t *testing.T) {
 	for key, want := range map[string]any{
 		"access_token": "new-token",
 		"prefix":       "team",
-		"proxy_url":    "http://127.0.0.1:8080",
 		"disabled":     true,
 		"weight":       float64(5),
 	} {
@@ -192,6 +191,10 @@ func TestManagerLogin_MigratesMatchingLegacyClaudeCredential(t *testing.T) {
 			t.Errorf("%s = %#v, want %#v", key, got, want)
 		}
 	}
+	if _, copied := saved["proxy_url"]; copied {
+		t.Fatal("legacy migration copied a non-policy field")
+	}
+
 }
 
 func TestManagerLogin_ReloginKeepsCanonicalXAICredential(t *testing.T) {
@@ -318,7 +321,7 @@ func TestManagerLogin_SubjectOnlyReloginKeepsEmailCredential(t *testing.T) {
 	if saved["access_token"] != "new-token" || saved["prefix"] != "team" || saved["weight"] != float64(5) || saved["email"] != "a+b@example.com" {
 		t.Fatalf("saved credential = %#v, want new token with preserved settings and email", saved)
 	}
-	entries, errReadDir := os.ReadDir(authDir)
+	entries, errReadDir := filepath.Glob(filepath.Join(authDir, "*.json"))
 	if errReadDir != nil {
 		t.Fatalf("ReadDir error: %v", errReadDir)
 	}
@@ -364,7 +367,7 @@ func TestManagerLogin_SubjectOnlyReloginKeepsEmailCredential(t *testing.T) {
 	if saved["access_token"] != "round-trip-token" || saved["prefix"] != "team" || saved["weight"] != float64(5) || saved["email"] != "a+b@example.com" {
 		t.Fatalf("round-trip credential = %#v, want newest token with preserved settings and email", saved)
 	}
-	entries, errReadDir = os.ReadDir(authDir)
+	entries, errReadDir = filepath.Glob(filepath.Join(authDir, "*.json"))
 	if errReadDir != nil {
 		t.Fatalf("ReadDir error: %v", errReadDir)
 	}
