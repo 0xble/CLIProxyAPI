@@ -1,14 +1,14 @@
 # Maintenance
 
-## Current candidate: v8.0.63 and Claude Fable 5.2
+## Current candidate: v8.0.64
 
-Upstream release `v8.0.63` is `6db7d4b839d86c5b24e17bbe73bcd4db18ef1b1a` and includes merged [PR #7392](https://github.com/router-for-me/CLIProxyAPI/pull/7392), `1649a002aab0c00d9d987b715aa3f195fc1c7f0c`. At verification time this tag equals upstream `main`; no unreleased cherry-pick is needed. The local serving v8.0.61 build reproduces the Fable rejection: HTTP 400, Claude Code 2.1.280 unsupported (2.1.290 required).
+Upstream release `v8.0.64` is `905637daa3f2fae4dcacf50164dac15ad43ed5c2`. It is merged over fork main `baa08734d01e9f440879b1546dce1666b5852be2`, which is v8.0.63 plus CPA-008. CPA-001 through CPA-008 and read-only management are preserved, along with the hijacked-websocket teardown test fix. The release note and the full summary are in the release history below.
 
-The selected solution is to adopt the measured upstream 2.1.321 fingerprint and beta assembly rather than override a version header locally. Root `AGENTS.md` was read at this revision; root `CONTRIBUTING.md` is absent. Release notes for v8.0.62 and v8.0.63 were inspected. Merge both release tags over fork main `232f0bf6a95906e4ead7800529167f19d09dbb73`, preserving CPA-001 through CPA-007 and read-only management. Their production overlays remain present, including the reserve gates in scheduler and selector, final-request cache observations, and the Claude thinking-budget repair.
+The only conflict is `sdk/cliproxy/auth/conductor_request_scoped_errors.go`. Upstream #7397 resolves request-scoped rules once per attempt for usage `fail.code`. The fork's CPA-001 per-rule `cooldown` is carried through that resolved list, and 1 cooldown-aware matcher serves both usage classification and execution. A rule with an invalid cooldown is therefore ignored consistently. `TestRequestScopedCooldown_ResolvedRulesKeepCooldownAndAgreeWithExecution` pins this, and no existing assertion changes.
 
-The only conflict is the HTTP Responses interrupt test fixture. Released v8.0.62 now supplies cancellation-channel synchronization, a `sync.Once` close guard, and a cancellation-before-incomplete ordering regression, superseding the fork's cancellation-channel prerequisite. Adopt that entire upstream test file; no assertion is weakened or skipped. Keep the separate hijacked-websocket-handler teardown fix. The three upstream PR-guard workflows remain absent, as required for fork PRs targeting `main`.
+Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA, then verify Codex Responses and Claude inference. Source gates are `go build ./...`, auth and usage tests, and `bin/ci gate`.
 
-Activation is separately authorized for the local CPA service only. Use the existing installer on the published merged fork SHA, preserve v8.0.61 for rollback, then verify real Fable 5.2, Opus 5.5 and Codex Responses inference. Source gates are `go build ./...`, executor/auth tests and `bin/ci gate`.
+The v8.0.63 Claude Fable 5.2 candidate notes are superseded. They adopted the upstream 2.1.321 fingerprint without a local header override, and that remains unchanged.
 
 ## Background
 
