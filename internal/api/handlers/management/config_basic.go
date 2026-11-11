@@ -30,24 +30,19 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		return
 	}
 	h.mu.Lock()
-	readOnly := h.cfg.RemoteManagement.ReadOnly
 	cfg := new(*h.cfg)
 	h.mu.Unlock()
-	if readOnly {
-		var payload any
-		encoded, errMarshal := json.Marshal(cfg)
-		if errMarshal != nil || json.Unmarshal(encoded, &payload) != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
-			return
-		}
-		c.JSON(http.StatusOK, redactReadOnlyConfig(payload))
+	var payload any
+	encoded, errMarshal := json.Marshal(cfg)
+	if errMarshal != nil || json.Unmarshal(encoded, &payload) != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
 		return
 	}
-	c.JSON(200, cfg)
+	c.JSON(http.StatusOK, redactReadOnlyConfig(payload))
 }
 
 // isReadOnlySecretKey reports whether a config key names a credential that a
-// read-only management view must never return.
+// management config view must never return, regardless of write access.
 func isReadOnlySecretKey(key string) bool {
 	k := normalizeReadOnlyKey(key)
 	switch k {
@@ -308,8 +303,7 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
 }
 
-// GetConfigYAML returns the raw config.yaml file bytes without re-encoding.
-// It preserves comments and original formatting/styles.
+// GetConfigYAML returns a sanitized view of config.yaml, never raw credentials.
 func (h *Handler) GetConfigYAML(c *gin.Context) {
 	data, err := os.ReadFile(h.configFilePath)
 	if err != nil {
@@ -320,26 +314,21 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
 		return
 	}
-	h.mu.Lock()
-	readOnly := h.cfg != nil && h.cfg.RemoteManagement.ReadOnly
-	h.mu.Unlock()
-	if readOnly {
-		var payload any
-		if errUnmarshal := yaml.Unmarshal(data, &payload); errUnmarshal != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
-			return
-		}
-		sanitized, errMarshal := yaml.Marshal(redactReadOnlyConfig(payload))
-		if errMarshal != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
-			return
-		}
-		data = sanitized
+	var payload any
+	if errUnmarshal := yaml.Unmarshal(data, &payload); errUnmarshal != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
+		return
 	}
+	sanitized, errMarshal := yaml.Marshal(redactReadOnlyConfig(payload))
+	if errMarshal != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
+		return
+	}
+	data = sanitized
 	c.Header("Content-Type", "application/yaml; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
-	// Write raw bytes as-is
+	// Write only the sanitized serialization.
 	_, _ = c.Writer.Write(data)
 }
 

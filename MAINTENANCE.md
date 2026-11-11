@@ -146,11 +146,29 @@ The local gateway requires the read-only management patch merged as
 secret redaction. Preserve the fork middleware on both management versions and
 OAuth callbacks, the config capability, `internal/api/server_management_v8_test.go`,
 `internal/api/server_management_v8_redaction_test.go`, and handler redaction tests.
-Read-only `GET /v8/management/config.yaml` must serialize the sanitized YAML tree,
-not the original normalized bytes. Full-access YAML retains its original normalized
-response bytes. `TestManagementV8ConfigReadOnlyRedaction` exercises both formats and
-access modes through registered routes with synthetic secrets, preserving source
-ETags, no-store headers, safe metadata, comments, and the persisted file.
+Config GET responses always redact credentials, independently of
+`remote-management.read-only`: that setting restricts methods and paths, not
+secret visibility. Both v8 formats and legacy `/v0/management/config` and
+`/v0/management/config.yaml` reuse the existing sanitizers. YAML reads serialize
+the sanitized tree rather than returning the original bytes; no unredacted
+management-config escape is provided. `TestManagementConfigAlwaysRedactsSecrets`
+exercises both access modes, config subtrees and legacy views with synthetic
+secrets, preserving source ETags, existing no-store headers, safe metadata, v8
+comments, and the persisted file. `TestManagementRedactedCredentialsAllowWritableCooldownReset`
+pins token-free credential views and permits a targeted routing cooldown reset
+only with read-only disabled, without clearing a sibling's hold.
+Repository/TUI, dotfiles automation and llm-economics callers need no raw keys
+from management config; the credit inventory reads its private local file instead.
+JSON TURN read/write secret preservation remains unchanged. Config GETs are
+sanitized views, not lossless exports: clients replacing a complete document must
+supply credentials from their private source; YAML replacement semantics remain
+unchanged. This is an intentional fork-local security correction to the existing
+management divergence, including deprecated v0 config reads, not a new patch ID.
+`management.ManagementRedactionCapability` is the stable binary marker
+`cliproxyapi-capability:management-redaction-always-v1`. `NewHandler` logs it at
+initialization so the linker retains it for launchers that must reject a
+non-redacting build before permitting writable management.
+`TestNewHandlerLogsManagementRedactionCapability` pins that runtime reference.
 Retire only after released production source passes
 the same method, path and redaction contract. Source synchronization does not
 authorize configuration changes or binary activation.

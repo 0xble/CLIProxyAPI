@@ -10,7 +10,20 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
+
+func TestNewHandlerLogsManagementRedactionCapability(t *testing.T) {
+	hook := logtest.NewGlobal()
+	defer hook.Reset()
+	NewHandler(&config.Config{}, "", nil)
+	for _, entry := range hook.AllEntries() {
+		if entry.Message == "cliproxyapi-capability:management-redaction-always-v1" {
+			return
+		}
+	}
+	t.Fatal("management initialization did not reference the stable redaction capability")
+}
 
 func TestAuthenticateManagementKey_LocalhostIPBan_BlocksCorrectKeyDuringBan(t *testing.T) {
 	h := &Handler{
