@@ -3,7 +3,7 @@ package management
 import (
 	"encoding/json"
 	"fmt"
-	"io"
+	"net/url"
 	"reflect"
 	"strings"
 
@@ -129,9 +129,12 @@ func redactedIdentity(value any) string {
 
 // compatibleEntry decides whether an incoming map is an edited copy of a stored
 // one: no masked secret may disagree, and at least one masked secret or one
-// non-secret scalar must agree. A changed endpoint therefore never inherits the
-// credentials of a different server.
+// non-secret scalar must agree. An entry whose endpoint (base-url or url) changed
+// never inherits stored credentials; the client must re-enter them.
 func compatibleEntry(next, previous map[string]any) bool {
+	if endpointChanged(next, previous) {
+		return false
+	}
 	agreed := false
 	for key, nv := range next {
 		ns, nOK := nv.(string)
@@ -164,6 +167,24 @@ func matchPrevious(next, old []any) []int {
 	}
 	for i := range next {
 		match[i] = -1
+		// A list position is the strongest available identity: clients commonly
+		// reorder entries while retaining only masks, including colliding masks.
+		if i < len(old) {
+			if nm, ok := next[i].(map[string]any); ok {
+				if om, ok := old[i].(map[string]any); ok && compatibleEntry(nm, om) {
+					match[i], used[i] = i, true
+					continue
+				}
+			} else if redactedIdentity(next[i]) == ids[i] {
+				match[i], used[i] = i, true
+				continue
+			}
+		}
+	}
+	for i := range next {
+		if match[i] >= 0 {
+			continue
+		}
 		id := redactedIdentity(next[i])
 		for j := range old {
 			if !used[j] && ids[j] == id {
@@ -305,7 +326,7 @@ func unresolvedMask(value any) (string, bool) {
 }
 
 func errUnresolvedMask(key string) error {
-	return fmt.Errorf("masked value for %q does not match a stored secret; send the full value or leave the field out", key)
+	return fmt.Errorf("masked value for %q does not match a stored secret (credentials must be re-entered when changing endpoint); send the full value or leave the field out", key)
 }
 
 // restoreManagementValue restores masked and omitted secrets in a decoded write
@@ -316,40 +337,6 @@ func restoreManagementValue(incoming, previous any) (any, error) {
 		return nil, errUnresolvedMask(key)
 	}
 	return restored, nil
-}
-
-// restoreManagementJSONList restores secrets in a v0 list body, which is either
-// a JSON array or {"items": [...]}, against the current list.
-func restoreManagementJSONList(data []byte, current any) ([]byte, error) {
-	var incoming any
-	if json.Unmarshal(data, &incoming) != nil {
-		return data, nil
-	}
-	encoded, err := json.Marshal(current)
-	if err != nil {
-		return data, nil
-	}
-	var previous any
-	_ = json.Unmarshal(encoded, &previous)
-	target := &incoming
-	if obj, ok := incoming.(map[string]any); ok {
-		items, hasItems := obj["items"]
-		if !hasItems {
-			return data, nil
-		}
-		restored, errRestore := restoreManagementValue(items, previous)
-		if errRestore != nil {
-			return nil, errRestore
-		}
-		obj["items"] = restored
-	} else {
-		restored, errRestore := restoreManagementValue(*target, previous)
-		if errRestore != nil {
-			return nil, errRestore
-		}
-		incoming = restored
-	}
-	return json.Marshal(incoming)
 }
 
 // restoreManagementYAMLBody restores secrets in a whole-config YAML write. The
@@ -513,51 +500,88 @@ func (h *Handler) restoreListBody(c *gin.Context, data []byte, current func() an
 	return out, true
 }
 
-// dropMaskedPatchFields keeps a PATCH from overwriting a stored secret with its
-// mask: a masked secret under "value" means "unchanged", so it is removed from
-// the patch before the handler applies it.
-func dropMaskedPatchFields(c *gin.Context) {
-	if c.Request.Method != "PATCH" || c.Request.Body == nil {
-		return
-	}
-	data, err := io.ReadAll(c.Request.Body)
-	c.Request.Body = io.NopCloser(strings.NewReader(string(data)))
-	if err != nil {
-		return
-	}
-	var body map[string]any
-	if json.Unmarshal(data, &body) != nil {
-		return
-	}
-	if value, ok := body["value"].(map[string]any); ok && dropMaskedFields(value) {
-		if out, errMarshal := json.Marshal(body); errMarshal == nil {
-			c.Request.Body = io.NopCloser(strings.NewReader(string(out)))
+// endpointChanged reports whether a patch changes an endpoint-bearing field.
+func endpointChanged(next, previous map[string]any) bool {
+	for key, old := range previous {
+		if key != "base-url" && key != "proxy-url" && key != "url" && key != "endpoint" {
+			continue
 		}
-	}
-}
-
-func dropMaskedFields(item map[string]any) bool {
-	changed := false
-	for key, child := range item {
-		switch in := child.(type) {
-		case string:
-			if isMaskedValue(key, in) {
-				delete(item, key)
-				changed = true
+		if incoming, ok := next[key]; ok {
+			if s, ok := incoming.(string); ok {
+				if key == "proxy-url" { // compare host/scheme/port, not userinfo
+					u, _ := url.Parse(s)
+					p, _ := url.Parse(fmt.Sprint(old))
+					if u.Scheme != p.Scheme || u.Host != p.Host {
+						return true
+					}
+				} else if strings.TrimSpace(s) != strings.TrimSpace(fmt.Sprint(old)) {
+					return true
+				}
 			}
-		case map[string]any:
-			changed = dropMaskedFields(in) || changed
 		}
 	}
-	return changed
+	return false
 }
 
-// RestoreMaskedPatchMiddleware applies dropMaskedPatchFields to v0 routes.
-func (h *Handler) RestoreMaskedPatchMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		dropMaskedPatchFields(c)
-		c.Next()
+func hasMaskedOrOmittedSecret(next, previous map[string]any) bool {
+	for key, old := range previous {
+		if !isMaskableKey(key) && !isReadOnlyURLKey(key) {
+			continue
+		}
+		incoming, present := next[key]
+		if !present {
+			return true
+		}
+		if s, ok := incoming.(string); ok && isMaskedValue(key, s) {
+			return true
+		}
+		if a, ok := incoming.([]any); ok {
+			for _, x := range a {
+				if s, ok := x.(string); ok && isManagementSecretMask(s) {
+					return true
+				}
+			}
+		}
+		_ = old
 	}
+	return false
+}
+
+// restoreEntryPatch restores a typed per-entry PATCH value against its stored entry.
+// It runs after the handler selects the entry, so list fields can be matched by index.
+func (h *Handler) restoreEntryPatch(c *gin.Context, patch any, previous any) bool {
+	inBytes, err := json.Marshal(patch)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return false
+	}
+	prevBytes, _ := json.Marshal(previous)
+	var incoming, old map[string]any
+	if json.Unmarshal(inBytes, &incoming) != nil || json.Unmarshal(prevBytes, &old) != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return false
+	}
+	if endpointChanged(incoming, old) && hasMaskedOrOmittedSecret(incoming, old) {
+		c.JSON(400, gin.H{"error": "credentials must be re-entered when changing endpoint"})
+		return false
+	}
+	restored, err := restoreManagementValue(incoming, old)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "unresolved_masked_secret", "message": err.Error()})
+		return false
+	}
+	out, _ := json.Marshal(restored)
+	if err := json.Unmarshal(out, patch); err != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return false
+	}
+	return true
+}
+
+// RestoreMaskedPatchMiddleware is retained for route compatibility. Per-entry
+// handlers restore after selecting the stored entry; global rewriting cannot do that safely.
+func (h *Handler) RestoreMaskedPatchMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) { c.Next() }
 }
 
 // restoreMaskedStringList resolves masked entries of a string list (api-keys)
