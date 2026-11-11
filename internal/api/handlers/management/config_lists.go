@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -346,7 +347,7 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 				return
 			}
 			if matchCount > 1 {
-				c.JSON(ambiguousSelectorStatus(match), gin.H{"error": "multiple items match; index is required"})
+				c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match; index is required"})
 				return
 			}
 			h.cfg.GeminiKey = append(h.cfg.GeminiKey[:matchIndex], h.cfg.GeminiKey[matchIndex+1:]...)
@@ -560,7 +561,7 @@ func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
 				return
 			}
 			if matchCount > 1 {
-				c.JSON(ambiguousSelectorStatus(match), gin.H{"error": "multiple items match; index is required"})
+				c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match; index is required"})
 				return
 			}
 			h.cfg.InteractionsKey = append(h.cfg.InteractionsKey[:matchIndex], h.cfg.InteractionsKey[matchIndex+1:]...)
