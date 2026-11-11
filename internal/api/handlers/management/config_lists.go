@@ -68,6 +68,12 @@ func (h *Handler) putStringList(c *gin.Context, set func([]string), after func()
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	for _, item := range arr {
+		if isManagementSecretMask(item) && !containsMaskOf(h.cfg.APIKeys, item) {
+			c.JSON(400, gin.H{"error": "unresolved_masked_secret", "message": "masked api-key does not match a stored key"})
+			return
+		}
+	}
 	set(arr)
 	if after != nil {
 		after()
@@ -86,6 +92,10 @@ func (h *Handler) patchStringList(c *gin.Context, targetOf func() *[]string, aft
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	if (body.Value != nil && isManagementSecretMask(*body.Value)) || (body.New != nil && isManagementSecretMask(*body.New)) {
+		c.JSON(200, gin.H{"status": "ok"})
 		return
 	}
 	h.mu.Lock()
@@ -156,10 +166,10 @@ func (h *Handler) deleteFromStringList(c *gin.Context, targetOf func() *[]string
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) { writeRedactedJSON(c, gin.H{"api-keys": h.cfg.APIKeys}) }
 func (h *Handler) PutAPIKeys(c *gin.Context) {
 	h.putStringList(c, func(v []string) {
-		h.cfg.APIKeys = append([]string(nil), v...)
+		h.cfg.APIKeys = restoreMaskedStringList(v, h.cfg.APIKeys)
 	}, nil)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
@@ -171,12 +181,16 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 
 // gemini-api-key: []GeminiKey
 func (h *Handler) GetGeminiKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"gemini-api-key": h.geminiKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"gemini-api-key": h.geminiKeysWithAuthIndex()})
 }
 func (h *Handler) PutGeminiKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.GeminiKey }); !okRestore {
 		return
 	}
 	var arr []config.GeminiKey
@@ -375,12 +389,16 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 
 // interactions-api-key: []GeminiKey
 func (h *Handler) GetInteractionsKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"interactions-api-key": h.interactionsKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"interactions-api-key": h.interactionsKeysWithAuthIndex()})
 }
 func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.InteractionsKey }); !okRestore {
 		return
 	}
 	var arr []config.GeminiKey
@@ -606,12 +624,16 @@ func (h *Handler) findExistingClaudeKey(existing []config.ClaudeKey, item config
 
 // claude-api-key: []ClaudeKey
 func (h *Handler) GetClaudeKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"claude-api-key": h.claudeKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"claude-api-key": h.claudeKeysWithAuthIndex()})
 }
 func (h *Handler) PutClaudeKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.ClaudeKey }); !okRestore {
 		return
 	}
 	var arr []config.ClaudeKey
@@ -881,12 +903,16 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 
 // openai-compatibility: []OpenAICompatibility
 func (h *Handler) GetOpenAICompat(c *gin.Context) {
-	c.JSON(200, gin.H{"openai-compatibility": h.openAICompatibilityWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"openai-compatibility": h.openAICompatibilityWithAuthIndex()})
 }
 func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.OpenAICompatibility }); !okRestore {
 		return
 	}
 	var arr []config.OpenAICompatibility
@@ -1051,12 +1077,16 @@ func (h *Handler) DeleteOpenAICompat(c *gin.Context) {
 
 // vertex-api-key: []VertexCompatKey
 func (h *Handler) GetVertexCompatKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"vertex-api-key": h.vertexCompatKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"vertex-api-key": h.vertexCompatKeysWithAuthIndex()})
 }
 func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.VertexCompatAPIKey }); !okRestore {
 		return
 	}
 	var arr []config.VertexCompatKey
@@ -1536,12 +1566,16 @@ func (h *Handler) DeleteOAuthRequestScopedErrors(c *gin.Context) {
 
 // codex-api-key: []CodexKey
 func (h *Handler) GetCodexKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"codex-api-key": h.codexKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"codex-api-key": h.codexKeysWithAuthIndex()})
 }
 func (h *Handler) PutCodexKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.CodexKey }); !okRestore {
 		return
 	}
 	var arr []config.CodexKey
@@ -1737,13 +1771,17 @@ func (h *Handler) DeleteCodexKey(c *gin.Context) {
 
 // xai-api-key: []XAIKey
 func (h *Handler) GetXAIKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"xai-api-key": h.xaiKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"xai-api-key": h.xaiKeysWithAuthIndex()})
 }
 
 func (h *Handler) PutXAIKeys(c *gin.Context) {
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.XAIKey }); !okRestore {
 		return
 	}
 	var arr []config.XAIKey
@@ -1935,13 +1973,17 @@ func (h *Handler) DeleteXAIKey(c *gin.Context) {
 
 // meta-api-key: []MetaKey
 func (h *Handler) GetMetaKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"meta-api-key": h.metaKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"meta-api-key": h.metaKeysWithAuthIndex()})
 }
 
 func (h *Handler) PutMetaKeys(c *gin.Context) {
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.MetaKey }); !okRestore {
 		return
 	}
 	var arr []config.MetaKey

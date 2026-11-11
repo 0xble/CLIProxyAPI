@@ -32,8 +32,9 @@ unredacted config export endpoint.
 `read-only` controls write/path access only. With it disabled, authenticated
 management writes such as `/routing/cooldown/reset` still work. A config GET is
 not a lossless backup: complete replacement writes must supply credentials from
-the operator's private source. JSON writes retain the existing omitted-TURN-secret
-preservation; YAML writes retain full replacement semantics.
+the operator's private source. JSON and YAML writes restore any secret leaf that is omitted or still carries its mask from the current stored configuration. An explicit new value replaces it, an explicit empty value is honored, and dropping an entry removes it. The mask format is `***` plus the last four characters for long values (short values use a shorter/no suffix). Proxy URL userinfo is masked the same way and restored on an unchanged PUT. This makes panel, YAML-editor, and TUI read/edit/write round trips safe without exposing credentials.
+
+The sole raw-secret management GET is `/v8/management/credentials/download` (and its legacy `/v0/management/auth-files/download` alias), an intentional operator export of an OAuth token file already readable from the configured auth directory. Logs, debug/request echoes, plugin config, credential lists, usage data, and every other management GET are redacted through the shared helper.
 
 GET renders the persisted configuration in the v8 layout without migrating the
 file or adding omitted runtime defaults. Successful v8 configuration writes save

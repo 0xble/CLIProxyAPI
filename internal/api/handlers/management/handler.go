@@ -78,7 +78,7 @@ type configReloadSnapshot struct {
 
 // NewHandler creates a new management handler instance.
 func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Manager) *Handler {
-	log.Info(ManagementRedactionCapability)
+	log.WithField("capability", ManagementRedactionCapability).Debug("management redaction capability active")
 	envSecret, _ := os.LookupEnv("MANAGEMENT_PASSWORD")
 	envSecret = strings.TrimSpace(envSecret)
 

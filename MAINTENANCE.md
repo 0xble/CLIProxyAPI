@@ -159,14 +159,21 @@ pins token-free credential views and permits a targeted routing cooldown reset
 only with read-only disabled, without clearing a sibling's hold.
 Repository/TUI, dotfiles automation and llm-economics callers need no raw keys
 from management config; the credit inventory reads its private local file instead.
-JSON TURN read/write secret preservation remains unchanged. Config GETs are
-sanitized views, not lossless exports: clients replacing a complete document must
-supply credentials from their private source; YAML replacement semantics remain
-unchanged. This is an intentional fork-local security correction to the existing
+JSON and YAML writes restore any omitted or still-masked secret leaf from the stored config
+(entries matched by redacted identity, then by index plus non-secret fields); an explicit new
+value replaces it, an explicit empty value is honored, and a dropped entry stays removed.
+Unresolvable masks are rejected with 400 rather than persisted. Mask format: `***` plus the
+last 4 characters (2 for 8-15 character values, none shorter); URL userinfo is masked the
+same way. The only raw-secret management GET is `credentials/download` (and the v0
+`auth-files/download` alias), a deliberate token-file export. `TestManagementGETRoutesNeverReturnRawSecrets`
+walks every registered GET route with an explicit allowlist, so new routes fail instead of
+leaking; round-trip tests live in `server_management_roundtrip_test.go`.
+Config GETs are sanitized views, not lossless exports. This is an intentional fork-local
+security correction to the existing
 management divergence, including deprecated v0 config reads, not a new patch ID.
 `management.ManagementRedactionCapability` is the stable binary marker
-`cliproxyapi-capability:management-redaction-always-v1`. `NewHandler` logs it at
-initialization so the linker retains it for launchers that must reject a
+`cliproxyapi-capability:management-redaction-always-v1`. `NewHandler` references it as a
+Debug log field so the linker retains it for launchers that must reject a
 non-redacting build before permitting writable management.
 `TestNewHandlerLogsManagementRedactionCapability` pins that runtime reference.
 Retire only after released production source passes

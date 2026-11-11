@@ -716,6 +716,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 			entry["account_type"] = accountType
 		}
 		if account != "" {
+			if strings.EqualFold(accountType, "api_key") {
+				account = maskManagementSecret(account)
+			}
 			entry["account"] = account
 		}
 	}
