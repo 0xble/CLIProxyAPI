@@ -121,7 +121,9 @@ func TestIssue7017ZeroHintCooldownBoundaries(t *testing.T) {
 			{name: "live minimum", previous: time.Hour, keep: true},
 			{name: "no existing deadline"},
 			{name: "expired deadline", previous: -time.Hour},
-			{name: "cooling disabled", previous: time.Hour, disabled: true},
+			// Since issue 7431 an explicit force cooldown keeps its own deadline
+			// and survives disable-cooling, so a zero hint must leave it intact.
+			{name: "cooling disabled", previous: time.Hour, disabled: true, keep: true},
 		} {
 			scope := "model"
 			if model == "" {
@@ -143,11 +145,13 @@ func TestIssue7017ZeroHintCooldownBoundaries(t *testing.T) {
 						deadline = manager.auths[auth.ID].NextRetryAfter
 						if tc.previous < 0 {
 							manager.auths[auth.ID].NextRetryAfter = time.Now().Add(tc.previous)
+							manager.auths[auth.ID].forceCooldownUntil = time.Now().Add(tc.previous)
 						}
 					} else {
 						deadline = manager.auths[auth.ID].ModelStates[model].NextRetryAfter
 						if tc.previous < 0 {
 							manager.auths[auth.ID].ModelStates[model].NextRetryAfter = time.Now().Add(tc.previous)
+							manager.auths[auth.ID].ModelStates[model].forceCooldownUntil = time.Now().Add(tc.previous)
 						}
 					}
 					manager.mu.Unlock()
