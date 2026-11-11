@@ -1136,6 +1136,9 @@ type OpenAICompatibilityAPIKey struct {
 	// the provider-group default field by field. Pools stay per credential, so
 	// opting in never shares connections with another key.
 	ConnectionPool *ProxyConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+
+	// Headers optionally adds extra HTTP headers sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
 // OpenAICompatibilityModel represents a model configuration for OpenAI compatibility,

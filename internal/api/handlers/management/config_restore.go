@@ -132,9 +132,8 @@ func redactedIdentity(value any) string {
 // non-secret scalar must agree. An entry whose endpoint (base-url or url) changed
 // never inherits stored credentials; the client must re-enter them.
 func compatibleEntry(next, previous map[string]any) bool {
-	if endpointChanged(next, previous) {
-		return false
-	}
+	// Whole-list writes may intentionally edit an endpoint; endpoint-change
+	// protection is enforced by typed per-entry PATCH handlers below.
 	agreed := false
 	for key, nv := range next {
 		ns, nOK := nv.(string)
@@ -506,21 +505,31 @@ func endpointChanged(next, previous map[string]any) bool {
 		if key != "base-url" && key != "proxy-url" && key != "url" && key != "endpoint" {
 			continue
 		}
-		if incoming, ok := next[key]; ok {
-			if s, ok := incoming.(string); ok {
-				if key == "proxy-url" { // compare host/scheme/port, not userinfo
-					u, _ := url.Parse(s)
-					p, _ := url.Parse(fmt.Sprint(old))
-					if u.Scheme != p.Scheme || u.Host != p.Host {
-						return true
-					}
-				} else if strings.TrimSpace(s) != strings.TrimSpace(fmt.Sprint(old)) {
-					return true
-				}
-			}
+		if incoming, ok := next[key].(string); ok && endpointValueChanged(key, incoming, fmt.Sprint(old)) {
+			return true
 		}
 	}
 	return false
+}
+
+func endpointValueChanged(key, incoming, previous string) bool {
+	if key == "proxy-url" {
+		return endpointURLSignature(incoming) != endpointURLSignature(previous)
+	}
+	if u, err := url.Parse(strings.TrimSpace(incoming)); err == nil && u.Scheme != "" && u.Host != "" {
+		if p, errPrevious := url.Parse(strings.TrimSpace(previous)); errPrevious == nil && p.Scheme != "" && p.Host != "" {
+			return u.Scheme != p.Scheme || u.Host != p.Host
+		}
+	}
+	return strings.TrimRight(strings.TrimSpace(incoming), "/") != strings.TrimRight(strings.TrimSpace(previous), "/")
+}
+
+func endpointURLSignature(value string) string {
+	u, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return strings.TrimSpace(value)
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
 }
 
 func hasMaskedOrOmittedSecret(next, previous map[string]any) bool {
@@ -529,7 +538,7 @@ func hasMaskedOrOmittedSecret(next, previous map[string]any) bool {
 			continue
 		}
 		incoming, present := next[key]
-		if !present {
+		if !present || incoming == nil {
 			return true
 		}
 		if s, ok := incoming.(string); ok && isMaskedValue(key, s) {
