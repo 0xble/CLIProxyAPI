@@ -532,14 +532,21 @@ func endpointURLSignature(value string) string {
 	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
 }
 
-func hasMaskedOrOmittedSecret(next, previous map[string]any) bool {
+// hasMaskedSecret reports whether a patch sends back a masked stored secret.
+// Omitted secrets keep upstream PATCH semantics (the stored value is kept), so
+// only an echoed mask counts: re-pointing a masked credential at a new endpoint
+// must be an explicit re-entry, while ordinary edits stay convenient.
+func hasMaskedSecret(next, previous map[string]any) bool {
 	for key, old := range previous {
 		if !isMaskableKey(key) && !isReadOnlyURLKey(key) {
 			continue
 		}
+		if isEmptyManagementValue(old) {
+			continue
+		}
 		incoming, present := next[key]
 		if !present || incoming == nil {
-			return true
+			continue
 		}
 		if s, ok := incoming.(string); ok && isMaskedValue(key, s) {
 			return true
@@ -551,7 +558,20 @@ func hasMaskedOrOmittedSecret(next, previous map[string]any) bool {
 				}
 			}
 		}
-		_ = old
+	}
+	return false
+}
+
+func isEmptyManagementValue(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(t) == ""
+	case []any:
+		return len(t) == 0
+	case map[string]any:
+		return len(t) == 0
 	}
 	return false
 }
@@ -570,7 +590,7 @@ func (h *Handler) restoreEntryPatch(c *gin.Context, patch any, previous any) boo
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return false
 	}
-	if endpointChanged(incoming, old) && hasMaskedOrOmittedSecret(incoming, old) {
+	if endpointChanged(incoming, old) && hasMaskedSecret(incoming, old) {
 		c.JSON(400, gin.H{"error": "credentials must be re-entered when changing endpoint"})
 		return false
 	}

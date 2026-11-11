@@ -164,11 +164,11 @@ JSON and YAML writes restore any omitted or still-masked secret leaf from the st
 value replaces it, an explicit empty value is honored, and a dropped entry stays removed.
 Unresolvable masks are rejected with 400 rather than persisted. Mask format: `***` plus the
 last 4 characters (2 for 8-15 character values, none shorter); URL userinfo is masked the
-same way. For per-entry PATCH, an unchanged `base-url` may round-trip masked or omitted
+same way. For per-entry PATCH, an unchanged endpoint may round-trip masked or omitted
 credentials, including nested headers and OpenAI-compatible `api-key-entries`. Changing a
-base URL with a masked or omitted credential is rejected with 400 and the message
+endpoint while echoing a masked credential is rejected with 400 and the message
 `credentials must be re-entered when changing endpoint`; provide an explicit replacement
-credential to change the endpoint. The only raw-secret management GET is `credentials/download` (and the v0
+credential, or omit the field to keep the stored one (upstream PATCH semantics). The only raw-secret management GET is `credentials/download` (and the v0
 `auth-files/download` alias), a deliberate token-file export. `TestManagementGETRoutesNeverReturnRawSecrets`
 walks every registered GET route with an explicit allowlist, so new routes fail instead of
 leaking; round-trip tests live in `server_management_roundtrip_test.go`.

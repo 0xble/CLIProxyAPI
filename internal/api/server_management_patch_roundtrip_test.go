@@ -76,7 +76,7 @@ func getManagementEntry(t *testing.T, e *roundTripEnv, path string) map[string]a
 	return nil
 }
 
-func TestManagementProviderPatchRejectsMaskedOrOmittedSecretOnEndpointChange(t *testing.T) {
+func TestManagementProviderPatchEndpointChangeRejectsMaskAndKeepsOmittedSecret(t *testing.T) {
 	cases := []struct {
 		name   string
 		path   string
@@ -109,14 +109,16 @@ func TestManagementProviderPatchRejectsMaskedOrOmittedSecretOnEndpointChange(t *
 				t.Fatalf("rejected masked endpoint change mutated storage: %s", got)
 			}
 
+			// An omitted secret keeps upstream PATCH semantics: the stored key
+			// stays with the entry and only the endpoint changes.
 			omitted := map[string]any{"base-url": "https://new.endpoint.invalid"}
 			encoded, _ = json.Marshal(map[string]any{"index": 0, "value": omitted})
 			rec = e.do(http.MethodPatch, tc.path, string(encoded))
-			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), endpointChangeMessage) {
+			if rec.Code != http.StatusOK {
 				t.Fatalf("omitted endpoint change status=%d body=%s", rec.Code, rec.Body.String())
 			}
-			if got := e.persisted(); got != before {
-				t.Fatalf("rejected omitted endpoint change mutated storage: %s", got)
+			if got := e.persisted(); !strings.Contains(got, tc.secret) || !strings.Contains(got, "new.endpoint.invalid") {
+				t.Fatalf("omitted endpoint change lost the stored secret or endpoint: %s", got)
 			}
 		})
 	}
