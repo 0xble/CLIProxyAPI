@@ -120,14 +120,13 @@ api-keys:
 		if !ok {
 			t.Fatalf("key %d is not map: %#v", i, k)
 		}
-		apiKey, _ := keyMap["api-key"].(string)
-		authIndex, _ := keyMap["auth_index"].(string)
-		wantIndex := expectedIndexes["codex:"+apiKey]
-		if wantIndex == "" {
-			t.Fatalf("missing expected index for codex key %s", apiKey)
+		if _, exposed := keyMap["api-key"]; exposed {
+			t.Fatal("config view exposed an API key")
 		}
-		if authIndex != wantIndex {
-			t.Fatalf("codex key %s: auth_index = %q, want %q", apiKey, authIndex, wantIndex)
+		authIndex, _ := keyMap["auth_index"].(string)
+		wantIndex := expectedIndexes[[]string{"codex:sk-codex-1", "codex:sk-codex-2"}[i]]
+		if wantIndex == "" || authIndex != wantIndex {
+			t.Fatalf("codex key %d: auth_index = %q, want %q", i, authIndex, wantIndex)
 		}
 	}
 
@@ -194,7 +193,11 @@ api-keys:
 		t.Fatal("config.yaml output must not contain auth_index")
 	}
 
-	// 5. PUT round-trip with payload containing auth_index
+	// 5. Writes supply credentials explicitly: a redacted view is not an export.
+	// Keep testing that the read-only auth_index decoration is ignored on save.
+	for i, key := range keys {
+		key.(map[string]any)["api-key"] = []string{"sk-codex-1", "sk-codex-2"}[i]
+	}
 	codexJSON, _ := json.Marshal(codexGroups)
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPut, "/v8/management/config/api-keys/codex", strings.NewReader(string(codexJSON)))
@@ -406,7 +409,8 @@ api-keys:
 		t.Fatal(errDecode)
 	}
 
-	// PUT codex keys back (round-trip with auth_index)
+	// Supply the private credential explicitly alongside the auth_index decoration.
+	pluginCodexGroups[0]["keys"].([]any)[0].(map[string]any)["api-key"] = "sk-plugin-test"
 	codexBytes, _ := json.Marshal(pluginCodexGroups)
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPut, "/v8/management/config/api-keys/codex", strings.NewReader(string(codexBytes)))

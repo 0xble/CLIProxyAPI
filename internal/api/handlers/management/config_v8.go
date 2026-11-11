@@ -58,19 +58,16 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
 		config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
 		// Auth indexes are derived from api-key leaves, so attach them before
-		// read-only redaction removes those leaves.
+		// management config redaction removes those leaves.
 		if !yamlRequest {
 			h.injectV8APIKeyAuthIndexesLocked(root, data)
 		}
-		if h.cfg.RemoteManagement.ReadOnly {
-			redactReadOnlyYAMLNode(root)
-		}
-		if h.cfg.RemoteManagement.ReadOnly || !yamlRequest {
-			if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
-				for _, server := range servers.Content {
-					deleteConfigV8Path(server, []string{"username"})
-					deleteConfigV8Path(server, []string{"credential"})
-				}
+		// Secret visibility is independent of management write access.
+		redactReadOnlyYAMLNode(root)
+		if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
+			for _, server := range servers.Content {
+				deleteConfigV8Path(server, []string{"username"})
+				deleteConfigV8Path(server, []string{"credential"})
 			}
 		}
 		value := configV8Node(root, parts)
@@ -81,12 +78,10 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		c.Header("ETag", configV8ETag(diskHash))
 		if yamlRequest {
-			if h.cfg.RemoteManagement.ReadOnly {
-				data, err = yaml.Marshal(&doc)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
-					return
-				}
+			data, err = yaml.Marshal(&doc)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
+				return
 			}
 			c.Data(http.StatusOK, "application/yaml; charset=utf-8", data)
 			return

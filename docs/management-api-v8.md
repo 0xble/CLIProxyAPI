@@ -22,6 +22,19 @@ All paths below are relative to `/v8/management`.
 | `/config.yaml` | GET, PUT | Read or replace the complete configuration as YAML. |
 | `/config/<section>/<field>` | GET, PUT, PATCH, DELETE | Read or modify a section or field using its path in the v8 tree. |
 
+Config GETs are sanitized views, in both JSON and YAML, even when
+`remote-management.read-only` is `false`. API keys, tokens, passwords, ICE
+credentials and URL userinfo are not returned. Safe provider metadata and JSON
+`auth_index` values remain available. `/v0/management/config` and
+`/v0/management/config.yaml` follow the same redaction policy. There is no
+unredacted config export endpoint.
+
+`read-only` controls write/path access only. With it disabled, authenticated
+management writes such as `/routing/cooldown/reset` still work. A config GET is
+not a lossless backup: complete replacement writes must supply credentials from
+the operator's private source. JSON writes retain the existing omitted-TURN-secret
+preservation; YAML writes retain full replacement semantics.
+
 GET renders the persisted configuration in the v8 layout without migrating the
 file or adding omitted runtime defaults. Successful v8 configuration writes save
 the latest layout; reads and rejected writes leave the file unchanged.

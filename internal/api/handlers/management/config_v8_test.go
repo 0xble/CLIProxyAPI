@@ -601,8 +601,11 @@ func TestConfigV8JSONTURNSecrets(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v8/management/config.yaml", nil))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "test-relay-password") {
-		t.Fatal("YAML export lost TURN credentials")
+	if w.Code != http.StatusOK {
+		t.Fatalf("YAML GET status=%d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "test-relay-user") || strings.Contains(w.Body.String(), "test-relay-password") {
+		t.Fatal("YAML exposed TURN credentials")
 	}
 	for _, body := range []string{
 		`[{"urls":["turn:replacement.invalid:3478"]}]`,
