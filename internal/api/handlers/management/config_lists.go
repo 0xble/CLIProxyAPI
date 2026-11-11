@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -758,10 +759,11 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 			entry.Cloak = nil
 		} else {
 			type cloakPatch struct {
-				Mode           *string   `json:"mode"`
-				StrictMode     *bool     `json:"strict-mode"`
-				SensitiveWords *[]string `json:"sensitive-words"`
-				CacheUserID    *bool     `json:"cache-user-id"`
+				Mode                  *string         `json:"mode"`
+				StrictMode            *bool           `json:"strict-mode"`
+				SensitiveWords        *[]string       `json:"sensitive-words"`
+				SensitiveWordsReplace json.RawMessage `json:"sensitive-words-replace"`
+				CacheUserID           *bool           `json:"cache-user-id"`
 			}
 			var p cloakPatch
 			if errCloak := json.Unmarshal(body.Value.Cloak, &p); errCloak != nil {
@@ -775,6 +777,7 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 				if len(entry.Cloak.SensitiveWords) > 0 {
 					copiedCloak.SensitiveWords = append([]string(nil), entry.Cloak.SensitiveWords...)
 				}
+				copiedCloak.SensitiveWordsReplace = maps.Clone(entry.Cloak.SensitiveWordsReplace)
 				entry.Cloak = &copiedCloak
 			}
 			if p.Mode != nil {
@@ -792,6 +795,20 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 			}
 			if p.SensitiveWords != nil {
 				entry.Cloak.SensitiveWords = *p.SensitiveWords
+			}
+			// Like sensitive-words, the replacement map is replaced as a whole;
+			// an explicit null or {} clears it, and an omitted field keeps it.
+			if len(p.SensitiveWordsReplace) > 0 {
+				if strings.TrimSpace(string(p.SensitiveWordsReplace)) == "null" {
+					entry.Cloak.SensitiveWordsReplace = nil
+				} else {
+					var replace map[string]string
+					if errReplace := json.Unmarshal(p.SensitiveWordsReplace, &replace); errReplace != nil {
+						c.JSON(400, gin.H{"error": "invalid cloak config"})
+						return
+					}
+					entry.Cloak.SensitiveWordsReplace = replace
+				}
 			}
 			if p.CacheUserID != nil {
 				entry.Cloak.CacheUserID = p.CacheUserID

@@ -684,9 +684,6 @@ func truncateUTF8Boundary(s string, maxBytes int) int {
 	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
 		maxBytes--
 	}
-	if maxBytes == 0 {
-		return 1
-	}
 	return maxBytes
 }
 

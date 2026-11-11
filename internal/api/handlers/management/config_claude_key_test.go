@@ -905,3 +905,84 @@ func TestPatchClaudeKeyPriority(t *testing.T) {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestPatchClaudeKeyCloakSensitiveWordsReplace(t *testing.T) {
+	configFile := writeTestConfigFile(t)
+	if errWrite := os.WriteFile(configFile, []byte("claude-api-key:\n  - api-key: test-key\n    cloak:\n      mode: always\n"), 0o600); errWrite != nil {
+		t.Fatalf("os.WriteFile() error = %v", errWrite)
+	}
+	cfg := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "test-key", Cloak: &config.CloakConfig{Mode: "always"}}}}
+	h := &Handler{cfg: cfg, configFilePath: configFile}
+	patch := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/claude-api-key", strings.NewReader(body))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		h.PatchClaudeKey(ctx)
+		return rec
+	}
+	persisted := func() map[string]string {
+		loaded, errLoad := config.LoadConfigOptional(configFile, false)
+		if errLoad != nil {
+			t.Fatalf("LoadConfigOptional() error = %v", errLoad)
+		}
+		if loaded.ClaudeKey[0].Cloak == nil {
+			return nil
+		}
+		return loaded.ClaudeKey[0].Cloak.SensitiveWordsReplace
+	}
+
+	// Add: the map is accepted, normalized and persisted; mode is preserved.
+	if rec := patch(`{"index":0,"value":{"cloak":{"sensitive-words-replace":{" alpha ":"a","beta":"b"}}}}`); rec.Code != http.StatusOK {
+		t.Fatalf("add status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := cfg.ClaudeKey[0].Cloak.SensitiveWordsReplace; len(got) != 2 || got["alpha"] != "a" || got["beta"] != "b" {
+		t.Fatalf("SensitiveWordsReplace after add = %#v", got)
+	}
+	if cfg.ClaudeKey[0].Cloak.Mode != "always" {
+		t.Fatalf("Cloak.Mode = %q, want preserved always", cfg.ClaudeKey[0].Cloak.Mode)
+	}
+	if got := persisted(); len(got) != 2 || got["alpha"] != "a" {
+		t.Fatalf("persisted SensitiveWordsReplace after add = %#v", got)
+	}
+
+	// Omitted: an unrelated cloak patch keeps the existing map.
+	if rec := patch(`{"index":0,"value":{"cloak":{"strict-mode":true}}}`); rec.Code != http.StatusOK {
+		t.Fatalf("unrelated status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := cfg.ClaudeKey[0].Cloak.SensitiveWordsReplace; len(got) != 2 {
+		t.Fatalf("SensitiveWordsReplace after unrelated patch = %#v, want preserved", got)
+	}
+
+	// Update: the map is replaced as a whole, like sensitive-words.
+	if rec := patch(`{"index":0,"value":{"cloak":{"sensitive-words-replace":{"gamma":"g"}}}}`); rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := cfg.ClaudeKey[0].Cloak.SensitiveWordsReplace; len(got) != 1 || got["gamma"] != "g" {
+		t.Fatalf("SensitiveWordsReplace after update = %#v, want only gamma", got)
+	}
+
+	// Invalid shape is rejected without mutating the entry.
+	if rec := patch(`{"index":0,"value":{"cloak":{"sensitive-words-replace":["not","a","map"]}}}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid status = %d, want 400", rec.Code)
+	}
+	if got := cfg.ClaudeKey[0].Cloak.SensitiveWordsReplace; len(got) != 1 || got["gamma"] != "g" {
+		t.Fatalf("SensitiveWordsReplace after invalid patch = %#v, want unchanged", got)
+	}
+
+	// Clear: explicit null and empty object both remove it.
+	for _, clear := range []string{`null`, `{}`} {
+		if rec := patch(`{"index":0,"value":{"cloak":{"sensitive-words-replace":` + clear + `}}}`); rec.Code != http.StatusOK {
+			t.Fatalf("clear %s status = %d; body=%s", clear, rec.Code, rec.Body.String())
+		}
+		if got := cfg.ClaudeKey[0].Cloak.SensitiveWordsReplace; got != nil {
+			t.Fatalf("SensitiveWordsReplace after clear %s = %#v, want nil", clear, got)
+		}
+		if got := persisted(); got != nil {
+			t.Fatalf("persisted SensitiveWordsReplace after clear %s = %#v, want nil", clear, got)
+		}
+		if rec := patch(`{"index":0,"value":{"cloak":{"sensitive-words-replace":{"delta":"d"}}}}`); rec.Code != http.StatusOK {
+			t.Fatalf("re-add status = %d", rec.Code)
+		}
+	}
+}
