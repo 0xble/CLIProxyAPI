@@ -80,7 +80,7 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("codex totals = %d/%d, want 1/1", codexSuccess, codexFailed)
 	}
 
-	claudeEntry := payload["claude"]["https://claude.example.com|***-key"]
+	claudeEntry := payload["claude"]["https://claude.example.com|***ey"]
 	if claudeEntry.Success != 1 || claudeEntry.Failed != 0 {
 		t.Fatalf("claude totals = %d/%d, want 1/0", claudeEntry.Success, claudeEntry.Failed)
 	}
