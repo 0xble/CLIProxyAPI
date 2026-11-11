@@ -90,7 +90,7 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 				baseURL = strings.TrimSpace(auth.Attributes["base-url"])
 			}
 		}
-		compositeKey := baseURL + "|" + apiKey
+		compositeKey := baseURL + "|" + maskManagementSecret(apiKey)
 		provider := apiKeyUsageProviderKey(auth)
 
 		recent := auth.RecentRequestsSnapshot(now)

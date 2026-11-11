@@ -176,7 +176,7 @@ plugins:
 				}{
 					{"/v8/management/config/api-keys/claude", http.StatusOK},
 					{"/v8/management/config/oauth/providers/codex/live-media-relay/ice-servers", http.StatusOK},
-					{"/v8/management/config/plugins/configs/sample/password", http.StatusNotFound},
+					{"/v8/management/config/plugins/configs/sample/password", http.StatusOK},
 				} {
 					req := httptest.NewRequest(http.MethodGet, endpoint.path, nil)
 					req.RemoteAddr = "127.0.0.1:1234"

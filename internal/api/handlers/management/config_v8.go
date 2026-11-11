@@ -160,8 +160,11 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
-	if !yamlRequest && c.Request.Method != http.MethodDelete {
-		preserveV8TURNSecrets(root, before)
+	if c.Request.Method != http.MethodDelete {
+		if errRestore := restoreReadOnlyYAMLNode(root, before); errRestore != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unresolved_masked_secret", "message": errRestore.Error()})
+			return
+		}
 	}
 	// Revisions are owned by Home and must not become ordinary editable settings.
 	for _, field := range []string{"credentials/concurrency/lifecycle-config-revision", "credentials/concurrency/observation-barrier-revision", "plugins/auth-revision"} {
@@ -239,6 +242,20 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 			// recurse into it and let the per-entry credential leaves be removed.
 			v8ProviderGroups := normalizeReadOnlyKey(key.Value) == "api-keys" && value.Kind == yaml.MappingNode
 			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
+				if value.Kind == yaml.ScalarNode {
+					value.Value = maskManagementSecret(value.Value)
+					index += 2
+					continue
+				}
+				if value.Kind == yaml.SequenceNode {
+					for _, item := range value.Content {
+						if item.Kind == yaml.ScalarNode {
+							item.Value = maskManagementSecret(item.Value)
+						}
+					}
+					index += 2
+					continue
+				}
 				node.Content = append(node.Content[:index], node.Content[index+2:]...)
 				continue
 			}

@@ -120,8 +120,8 @@ api-keys:
 		if !ok {
 			t.Fatalf("key %d is not map: %#v", i, k)
 		}
-		if _, exposed := keyMap["api-key"]; exposed {
-			t.Fatal("config view exposed an API key")
+		if apiKey, exposed := keyMap["api-key"].(string); !exposed || !strings.HasPrefix(apiKey, "***") {
+			t.Fatalf("config view did not mask API key: %#v", keyMap["api-key"])
 		}
 		authIndex, _ := keyMap["auth_index"].(string)
 		wantIndex := expectedIndexes[[]string{"codex:sk-codex-1", "codex:sk-codex-2"}[i]]

@@ -198,7 +198,7 @@ func (h *Handler) GetPluginConfig(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_config_encode_failed", "message": errBody.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, body)
+		c.JSON(http.StatusOK, redactReadOnlyConfig(body))
 		return
 	}
 
@@ -270,6 +270,17 @@ func (h *Handler) PutPluginConfig(c *gin.Context) {
 	if !okBody {
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ensurePluginConfigMap(h.cfg)
+	if current, errCurrent := pluginConfigJSONObject(h.cfg.Plugins.Configs[id]); errCurrent == nil {
+		restored, errRestore := restoreManagementValue(any(body), any(current))
+		if errRestore != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unresolved_masked_secret", "message": errRestore.Error()})
+			return
+		}
+		body, _ = restored.(map[string]any)
+	}
 	node, errNode := yamlNodeFromJSONObject(body)
 	if errNode != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "message": errNode.Error()})
@@ -280,10 +291,6 @@ func (h *Handler) PutPluginConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": errConfig.Error()})
 		return
 	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	ensurePluginConfigMap(h.cfg)
 	h.cfg.Plugins.Configs[id] = updated
 	h.persistLocked(c)
 }
@@ -302,6 +309,14 @@ func (h *Handler) PatchPluginConfig(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	ensurePluginConfigMap(h.cfg)
+	if current, errCurrent := pluginConfigJSONObject(h.cfg.Plugins.Configs[id]); errCurrent == nil {
+		restored, errRestore := restoreManagementValue(any(body), any(current))
+		if errRestore != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unresolved_masked_secret", "message": errRestore.Error()})
+			return
+		}
+		body, _ = restored.(map[string]any)
+	}
 	node := pluginConfigNode(h.cfg.Plugins.Configs[id])
 	keys := make([]string, 0, len(body))
 	for key := range body {

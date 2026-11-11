@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,31 +82,27 @@ func isReadOnlyUsernameKey(key string) bool {
 	return k == "username" || k == "user-name" || k == "user"
 }
 
-// redactReadOnlyProxyURL drops userinfo from any URL-shaped value so embedded
-// credentials stay private in read-only views. It covers hierarchical URLs
-// (socks5://user:pass@host) and opaque ICE URLs (turn:user:pass@host), keeping
-// the scheme and host. Other values are returned unchanged.
+// redactReadOnlyProxyURL masks URL userinfo while retaining the endpoint and a
+// suffix hint. This is safe for both hierarchical proxy URLs and opaque TURN
+// URLs. Values without userinfo are returned unchanged.
 func redactReadOnlyProxyURL(value string) string {
 	at := strings.LastIndex(value, "@")
 	if at < 0 {
 		return value
 	}
 	if strings.Contains(value, "://") {
-		parsed, err := url.Parse(value)
-		if err != nil {
-			return ""
+		at := strings.LastIndex(value, "@")
+		prefix := strings.Index(value, "://") + 3
+		if at > prefix {
+			return value[:prefix] + maskManagementSecret(value[prefix:at]) + value[at:]
 		}
-		if parsed.User == nil {
-			return value
-		}
-		parsed.User = nil
-		return parsed.String()
 	}
 	scheme, rest, ok := strings.Cut(value, ":")
 	if !ok || !isReadOnlyOpaqueURLScheme(scheme) || strings.Index(rest, "@") < 0 {
 		return value
 	}
-	return scheme + ":" + rest[strings.LastIndex(rest, "@")+1:]
+	userinfo := rest[:strings.LastIndex(rest, "@")]
+	return scheme + ":" + maskManagementSecret(userinfo) + rest[strings.LastIndex(rest, "@"):]
 }
 
 // isReadOnlyOpaqueURLScheme reports whether a scheme uses the opaque
@@ -120,6 +115,19 @@ func isReadOnlyOpaqueURLScheme(scheme string) bool {
 	return false
 }
 
+func writeRedactedJSON(c *gin.Context, value any) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
+		return
+	}
+	var payload any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
+		return
+	}
+	c.JSON(http.StatusOK, redactReadOnlyConfig(payload))
+}
 func redactReadOnlyConfig(value any) any {
 	switch item := value.(type) {
 	case map[string]any:
@@ -135,7 +143,14 @@ func redactReadOnlyConfig(value any) any {
 			v8ProviderGroups := normalizeReadOnlyKey(key) == "api-keys" && isMapping
 			switch {
 			case !v8ProviderGroups && isReadOnlySecretKey(key), isScalar && isReadOnlySecretScalarKey(key), hasCredential && isReadOnlyUsernameKey(key):
-				delete(item, key)
+				switch secret := item[key].(type) {
+				case string:
+					item[key] = maskManagementSecret(secret)
+				case []any:
+					item[key] = maskManagementSecretList(secret)
+				default:
+					delete(item, key)
+				}
 			case isScalar && isReadOnlyURLKey(key):
 				item[key] = redactReadOnlyProxyURL(item[key].(string))
 			default:
@@ -254,6 +269,15 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
 		return
+	}
+	h.mu.Lock()
+	currentRaw, _ := os.ReadFile(h.configFilePath)
+	h.mu.Unlock()
+	if restored, errRestore := restoreManagementYAMLBody(body, currentRaw); errRestore != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unresolved_masked_secret", "message": errRestore.Error()})
+		return
+	} else {
+		body = restored
 	}
 	var cfg config.Config
 	if err = yaml.Unmarshal(body, &cfg); err != nil {
@@ -485,9 +509,30 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 }
 
 // Proxy URL
-func (h *Handler) GetProxyURL(c *gin.Context) { c.JSON(200, gin.H{"proxy-url": h.cfg.ProxyURL}) }
+func (h *Handler) GetProxyURL(c *gin.Context) {
+	writeRedactedJSON(c, gin.H{"proxy-url": h.cfg.ProxyURL})
+}
 func (h *Handler) PutProxyURL(c *gin.Context) {
-	h.updateStringField(c, func(v string) { h.cfg.ProxyURL = v })
+	var body struct {
+		Value *string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	value := *body.Value
+	if isMaskedURLValue(value) {
+		restored, ok := restoreMaskedURL(value, h.cfg.ProxyURL)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unresolved_masked_secret", "message": "masked proxy-url does not match the stored value"})
+			return
+		}
+		value = restored
+	}
+	h.cfg.ProxyURL = value
+	h.persistLocked(c)
 }
 func (h *Handler) DeleteProxyURL(c *gin.Context) {
 	h.mu.Lock()
