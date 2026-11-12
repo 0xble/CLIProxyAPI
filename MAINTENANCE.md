@@ -146,11 +146,40 @@ The local gateway requires the read-only management patch merged as
 secret redaction. Preserve the fork middleware on both management versions and
 OAuth callbacks, the config capability, `internal/api/server_management_v8_test.go`,
 `internal/api/server_management_v8_redaction_test.go`, and handler redaction tests.
-Read-only `GET /v8/management/config.yaml` must serialize the sanitized YAML tree,
-not the original normalized bytes. Full-access YAML retains its original normalized
-response bytes. `TestManagementV8ConfigReadOnlyRedaction` exercises both formats and
-access modes through registered routes with synthetic secrets, preserving source
-ETags, no-store headers, safe metadata, comments, and the persisted file.
+Config GET responses always redact credentials, independently of
+`remote-management.read-only`: that setting restricts methods and paths, not
+secret visibility. Both v8 formats and legacy `/v0/management/config` and
+`/v0/management/config.yaml` reuse the existing sanitizers. YAML reads serialize
+the sanitized tree rather than returning the original bytes; no unredacted
+management-config escape is provided. `TestManagementConfigAlwaysRedactsSecrets`
+exercises both access modes, config subtrees and legacy views with synthetic
+secrets, preserving source ETags, existing no-store headers, safe metadata, v8
+comments, and the persisted file. `TestManagementRedactedCredentialsAllowWritableCooldownReset`
+pins token-free credential views and permits a targeted routing cooldown reset
+only with read-only disabled, without clearing a sibling's hold.
+Repository/TUI, dotfiles automation and llm-economics callers need no raw keys
+from management config; the credit inventory reads its private local file instead.
+JSON and YAML writes restore any omitted or still-masked secret leaf from the stored config
+(entries matched by redacted identity, then by index plus non-secret fields); an explicit new
+value replaces it, an explicit empty value is honored, and a dropped entry stays removed.
+Unresolvable masks are rejected with 400 rather than persisted. Mask format: `***` plus the
+last 4 characters (2 for 8-15 character values, none shorter); URL userinfo is masked the
+same way. For per-entry PATCH, an unchanged endpoint may round-trip masked or omitted
+credentials, including nested headers and OpenAI-compatible `api-key-entries`. Changing a
+endpoint while echoing a masked credential is rejected with 400 and the message
+`credentials must be re-entered when changing endpoint`; provide an explicit replacement
+credential, or omit the field to keep the stored one (upstream PATCH semantics). The only raw-secret management GET is `credentials/download` (and the v0
+`auth-files/download` alias), a deliberate token-file export. `TestManagementGETRoutesNeverReturnRawSecrets`
+walks every registered GET route with an explicit allowlist, so new routes fail instead of
+leaking; round-trip tests live in `server_management_roundtrip_test.go`.
+Config GETs are sanitized views, not lossless exports. This is an intentional fork-local
+security correction to the existing
+management divergence, including deprecated v0 config reads, not a new patch ID.
+`management.ManagementRedactionCapability` is the stable binary marker
+`cliproxyapi-capability:management-redaction-always-v1`. `NewHandler` references it as a
+Debug log field so the linker retains it for launchers that must reject a
+non-redacting build before permitting writable management.
+`TestNewHandlerLogsManagementRedactionCapability` pins that runtime reference.
 Retire only after released production source passes
 the same method, path and redaction contract. Source synchronization does not
 authorize configuration changes or binary activation.

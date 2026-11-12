@@ -58,19 +58,16 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
 		config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
 		// Auth indexes are derived from api-key leaves, so attach them before
-		// read-only redaction removes those leaves.
+		// management config redaction removes those leaves.
 		if !yamlRequest {
 			h.injectV8APIKeyAuthIndexesLocked(root, data)
 		}
-		if h.cfg.RemoteManagement.ReadOnly {
-			redactReadOnlyYAMLNode(root)
-		}
-		if h.cfg.RemoteManagement.ReadOnly || !yamlRequest {
-			if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
-				for _, server := range servers.Content {
-					deleteConfigV8Path(server, []string{"username"})
-					deleteConfigV8Path(server, []string{"credential"})
-				}
+		// Secret visibility is independent of management write access.
+		redactReadOnlyYAMLNode(root)
+		if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
+			for _, server := range servers.Content {
+				deleteConfigV8Path(server, []string{"username"})
+				deleteConfigV8Path(server, []string{"credential"})
 			}
 		}
 		value := configV8Node(root, parts)
@@ -81,12 +78,10 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		c.Header("ETag", configV8ETag(diskHash))
 		if yamlRequest {
-			if h.cfg.RemoteManagement.ReadOnly {
-				data, err = yaml.Marshal(&doc)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
-					return
-				}
+			data, err = yaml.Marshal(&doc)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed"})
+				return
 			}
 			c.Data(http.StatusOK, "application/yaml; charset=utf-8", data)
 			return
@@ -165,8 +160,11 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
-	if !yamlRequest && c.Request.Method != http.MethodDelete {
-		preserveV8TURNSecrets(root, before)
+	if c.Request.Method != http.MethodDelete {
+		if errRestore := restoreReadOnlyYAMLNode(root, before); errRestore != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unresolved_masked_secret", "message": errRestore.Error()})
+			return
+		}
 	}
 	// Revisions are owned by Home and must not become ordinary editable settings.
 	for _, field := range []string{"credentials/concurrency/lifecycle-config-revision", "credentials/concurrency/observation-barrier-revision", "plugins/auth-revision"} {
@@ -244,6 +242,20 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 			// recurse into it and let the per-entry credential leaves be removed.
 			v8ProviderGroups := normalizeReadOnlyKey(key.Value) == "api-keys" && value.Kind == yaml.MappingNode
 			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
+				if value.Kind == yaml.ScalarNode {
+					value.Value = maskManagementSecret(value.Value)
+					index += 2
+					continue
+				}
+				if value.Kind == yaml.SequenceNode {
+					for _, item := range value.Content {
+						if item.Kind == yaml.ScalarNode {
+							item.Value = maskManagementSecret(item.Value)
+						}
+					}
+					index += 2
+					continue
+				}
 				node.Content = append(node.Content[:index], node.Content[index+2:]...)
 				continue
 			}

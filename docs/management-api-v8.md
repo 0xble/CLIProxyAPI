@@ -22,6 +22,20 @@ All paths below are relative to `/v8/management`.
 | `/config.yaml` | GET, PUT | Read or replace the complete configuration as YAML. |
 | `/config/<section>/<field>` | GET, PUT, PATCH, DELETE | Read or modify a section or field using its path in the v8 tree. |
 
+Config GETs are sanitized views, in both JSON and YAML, even when
+`remote-management.read-only` is `false`. API keys, tokens, passwords, ICE
+credentials and URL userinfo are not returned. Safe provider metadata and JSON
+`auth_index` values remain available. `/v0/management/config` and
+`/v0/management/config.yaml` follow the same redaction policy. There is no
+unredacted config export endpoint.
+
+`read-only` controls write/path access only. With it disabled, authenticated
+management writes such as `/routing/cooldown/reset` still work. A config GET is
+not a lossless backup: complete replacement writes must supply credentials from
+the operator's private source. JSON and YAML writes restore any secret leaf that is omitted or still carries its mask from the current stored configuration. An explicit new value replaces it, an explicit empty value is honored, and dropping an entry removes it. The mask selectors are `***` plus the last four characters for values of 16 or more characters, the last two for values of 8–15 characters, and no suffix for shorter values. Proxy URL userinfo uses the same selectors. Per-entry PATCH round-trips masked or omitted credentials only when `base-url` is unchanged, including headers and OpenAI-compatible `api-key-entries`; a base URL change that echoes a masked credential returns 400 with `credentials must be re-entered when changing endpoint`; send the new credential, or omit the field to keep the stored one. This makes panel, YAML-editor, and TUI read/edit/write round trips safe without exposing credentials.
+
+The sole raw-secret management GET is `/v8/management/credentials/download` (and its legacy `/v0/management/auth-files/download` alias), an intentional operator export of an OAuth token file already readable from the configured auth directory. Logs, debug/request echoes, plugin config, credential lists, usage data, and every other management GET are redacted through the shared helper.
+
 GET renders the persisted configuration in the v8 layout without migrating the
 file or adding omitted runtime defaults. Successful v8 configuration writes save
 the latest layout; reads and rejected writes leave the file unchanged.

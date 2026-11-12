@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,14 +9,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"gopkg.in/yaml.v3"
 )
 
-func TestManagementV8ConfigReadOnlyRedaction(t *testing.T) {
+func TestManagementConfigAlwaysRedactsSecrets(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
 	const raw = `# Keep safe configuration comment
@@ -70,9 +73,7 @@ plugins:
 		"synthetic-snake-proxy-secret", "synthetic-snake-relay-secret",
 		"synthetic-ice-url-secret",
 	}
-	// Full-access JSON already strips ICE credentials, so these are only
-	// asserted absent for read-only access.
-	readOnlyHidden := []string{"synthetic-ice-user", "synthetic-ice-secret", "synthetic-snake-relay-user", "plugin-user"}
+	secrets = append(secrets, "synthetic-ice-user", "synthetic-ice-secret", "synthetic-snake-relay-user", "plugin-user", "iceurluser", "proxyuser")
 	for _, mode := range []struct {
 		name     string
 		readOnly bool
@@ -85,10 +86,11 @@ plugins:
 			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 				t.Fatal(err)
 			}
-			cfg := &config.Config{RemoteManagement: config.RemoteManagement{
-				ReadOnly:  mode.readOnly,
-				SecretKey: "synthetic-management-secret",
-			}}
+			cfg, err := config.ParseConfigBytes([]byte(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.RemoteManagement.ReadOnly = mode.readOnly
 			cfg.AuthDir = t.TempDir()
 			cfg.Plugins.Dir = t.TempDir()
 			h := management.NewHandler(cfg, path, nil)
@@ -102,7 +104,13 @@ plugins:
 			}{
 				{"/v8/management/config.yaml", "application/yaml; charset=utf-8", true},
 				{"/v8/management/config", "application/json; charset=utf-8", false},
+				{"/v0/management/config", "application/json; charset=utf-8", false},
+				{"/v0/management/config.yaml", "application/yaml; charset=utf-8", true},
 			} {
+				if mode.readOnly && endpoint.path == "/v0/management/config.yaml" {
+					// The legacy YAML path is intentionally outside the read-only allowlist.
+					continue
+				}
 				t.Run(endpoint.path, func(t *testing.T) {
 					req := httptest.NewRequest(http.MethodGet, endpoint.path, nil)
 					req.RemoteAddr = "127.0.0.1:1234"
@@ -115,26 +123,25 @@ plugins:
 					if got := response.Header().Get("Content-Type"); got != endpoint.contentType {
 						t.Errorf("Content-Type=%q, want %q", got, endpoint.contentType)
 					}
-					if got := response.Header().Get("Cache-Control"); got != "no-store" {
+					if got := response.Header().Get("Cache-Control"); endpoint.path != "/v0/management/config" && got != "no-store" {
 						t.Errorf("Cache-Control=%q, want no-store", got)
 					}
-					if got, want := response.Header().Get("ETag"), `"`+config.ComputeSourceHash([]byte(raw))+`"`; got != want {
-						t.Errorf("ETag=%q, want source ETag %q", got, want)
+					if strings.HasPrefix(endpoint.path, "/v8/") {
+						if got, want := response.Header().Get("ETag"), `"`+config.ComputeSourceHash([]byte(raw))+`"`; got != want {
+							t.Errorf("ETag=%q, want source ETag %q", got, want)
+						}
 					}
 					body := response.Body.String()
 					for _, secret := range secrets {
-						if strings.Contains(body, secret) == mode.readOnly {
-							t.Errorf("secret %q presence does not match read-only=%v", secret, mode.readOnly)
-						}
-					}
-					if mode.readOnly {
-						for _, secret := range readOnlyHidden {
-							if strings.Contains(body, secret) {
-								t.Errorf("read-only response leaked %q", secret)
-							}
+						if strings.Contains(body, secret) {
+							t.Errorf("response leaked synthetic secret %q", secret)
 						}
 					}
 					for _, safe := range []string{"weighted-round-robin", "safe-plugin-label", "proxy.example.invalid", "provider.example.invalid", "turn.example.invalid"} {
+						if safe == "safe-plugin-label" && endpoint.path == "/v0/management/config" {
+							// The legacy typed JSON view omits plugin configuration entirely.
+							continue
+						}
 						if !strings.Contains(body, safe) {
 							t.Errorf("response lost safe metadata %q", safe)
 						}
@@ -144,22 +151,13 @@ plugins:
 						if err := yaml.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 							t.Fatalf("invalid YAML response: %v", err)
 						}
-						if !strings.Contains(body, "# Keep safe configuration comment") {
+						if strings.HasPrefix(endpoint.path, "/v8/") && !strings.Contains(body, "# Keep safe configuration comment") {
 							t.Error("YAML response lost safe comment")
-						}
-						if !mode.readOnly {
-							normalized, _, err := config.NormalizeConfigLayout([]byte(raw), true)
-							if err != nil {
-								t.Fatal(err)
-							}
-							if body != string(normalized) {
-								t.Error("full-access YAML response changed normalized bytes")
-							}
 						}
 					} else if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 						t.Fatalf("invalid JSON response: %v", err)
 					}
-					if decoded["server"] == nil || decoded["routing"] == nil {
+					if decoded["routing"] == nil || (strings.HasPrefix(endpoint.path, "/v8/") && decoded["server"] == nil) {
 						t.Error("response lost safe configuration sections")
 					}
 					persisted, err := os.ReadFile(path)
@@ -170,6 +168,127 @@ plugins:
 						t.Error("GET changed persisted configuration")
 					}
 				})
+			}
+			if !mode.readOnly {
+				for _, endpoint := range []struct {
+					path string
+					want int
+				}{
+					{"/v8/management/config/api-keys/claude", http.StatusOK},
+					{"/v8/management/config/oauth/providers/codex/live-media-relay/ice-servers", http.StatusOK},
+					{"/v8/management/config/plugins/configs/sample/password", http.StatusOK},
+				} {
+					req := httptest.NewRequest(http.MethodGet, endpoint.path, nil)
+					req.RemoteAddr = "127.0.0.1:1234"
+					req.Header.Set("Authorization", "Bearer synthetic-access-password")
+					response := httptest.NewRecorder()
+					s.engine.ServeHTTP(response, req)
+					if response.Code != endpoint.want {
+						t.Fatalf("config subtree GET status=%d, want %d", response.Code, endpoint.want)
+					}
+					for _, secret := range secrets {
+						if strings.Contains(response.Body.String(), secret) {
+							t.Errorf("config subtree leaked synthetic secret %q", secret)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestManagementRedactedCredentialsAllowWritableCooldownReset(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+	for _, readOnly := range []bool{true, false} {
+		name := "full-access"
+		if readOnly {
+			name = "read-only"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := &config.Config{AuthDir: t.TempDir(), RemoteManagement: config.RemoteManagement{ReadOnly: readOnly, SecretKey: "synthetic-management-secret"}}
+			cfg.Plugins.Dir = t.TempDir()
+			manager := coreauth.NewManager(nil, nil, nil)
+			deadline := time.Now().Add(time.Hour)
+			for _, id := range []string{"target", "sibling"} {
+				auth := &coreauth.Auth{
+					ID: id, FileName: id + ".json", Provider: "claude", Status: coreauth.StatusError,
+					Attributes:  map[string]string{"path": filepath.Join(cfg.AuthDir, id+".json")},
+					Unavailable: true, NextRetryAfter: deadline,
+					Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: deadline},
+					ModelStates: map[string]*coreauth.ModelState{"test-model": {
+						Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: deadline,
+						Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: deadline},
+					}},
+					Metadata: map[string]any{"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token"},
+				}
+				if _, err := manager.Register(context.Background(), auth); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h := management.NewHandler(cfg, filepath.Join(t.TempDir(), "config.yaml"), manager)
+			h.SetLocalPassword("synthetic-access-password")
+			s := &Server{cfg: cfg, engine: gin.New(), mgmt: h}
+			s.managementRoutesEnabled.Store(true)
+			s.registerManagementRoutes()
+			request := func(method, path, body string) *httptest.ResponseRecorder {
+				t.Helper()
+				req := httptest.NewRequest(method, path, strings.NewReader(body))
+				req.RemoteAddr = "127.0.0.1:1234"
+				req.Header.Set("Authorization", "Bearer synthetic-access-password")
+				req.Header.Set("Content-Type", "application/json")
+				response := httptest.NewRecorder()
+				s.engine.ServeHTTP(response, req)
+				return response
+			}
+			for _, path := range []string{"/v8/management/credentials", "/v0/management/auth-files"} {
+				response := request(http.MethodGet, path, "")
+				if response.Code != http.StatusOK {
+					t.Fatalf("credential GET status=%d", response.Code)
+				}
+				for _, secret := range []string{"synthetic-access-token", "synthetic-refresh-token"} {
+					if strings.Contains(response.Body.String(), secret) {
+						t.Error("credential view leaked synthetic token")
+					}
+				}
+				var payload struct {
+					Files []struct {
+						AuthIndex string `json:"auth_index"`
+					} `json:"files"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+					t.Fatal(err)
+				}
+				if len(payload.Files) != 2 {
+					t.Fatalf("credential view has %d entries, want 2", len(payload.Files))
+				}
+				for _, file := range payload.Files {
+					if file.AuthIndex == "" {
+						t.Error("credential view lost auth index")
+					}
+				}
+			}
+			target, _ := manager.GetByID("target")
+			response := request(http.MethodPost, "/v8/management/routing/cooldown/reset", `{"auth_index":"`+target.EnsureIndex()+`"}`)
+			wantStatus := http.StatusOK
+			if readOnly {
+				wantStatus = http.StatusMethodNotAllowed
+			}
+			if response.Code != wantStatus {
+				t.Fatalf("cooldown reset status=%d, want %d", response.Code, wantStatus)
+			}
+			target, _ = manager.GetByID("target")
+			model := target.ModelStates["test-model"]
+			if model == nil {
+				t.Fatal("reset removed model state")
+			}
+			if target.Unavailable != readOnly || target.Quota.Exceeded != readOnly || target.NextRetryAfter.IsZero() == readOnly ||
+				model.Unavailable != readOnly || model.Quota.Exceeded != readOnly || model.NextRetryAfter.IsZero() == readOnly {
+				t.Error("cooldown reset did not respect write access")
+			}
+			sibling, _ := manager.GetByID("sibling")
+			if !sibling.Unavailable || !sibling.Quota.Exceeded || !sibling.NextRetryAfter.Equal(deadline) {
+				t.Error("target reset changed sibling cooldown")
 			}
 		})
 	}

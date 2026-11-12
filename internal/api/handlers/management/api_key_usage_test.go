@@ -68,7 +68,7 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("decode payload: %v", err)
 	}
 
-	codexEntry := payload["codex"]["https://codex.example.com|codex-key"]
+	codexEntry := payload["codex"]["https://codex.example.com|***ey"]
 	if codexEntry.Success != 1 || codexEntry.Failed != 1 {
 		t.Fatalf("codex totals = %d/%d, want 1/1", codexEntry.Success, codexEntry.Failed)
 	}
@@ -80,7 +80,7 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("codex totals = %d/%d, want 1/1", codexSuccess, codexFailed)
 	}
 
-	claudeEntry := payload["claude"]["https://claude.example.com|claude-key"]
+	claudeEntry := payload["claude"]["https://claude.example.com|***ey"]
 	if claudeEntry.Success != 1 || claudeEntry.Failed != 0 {
 		t.Fatalf("claude totals = %d/%d, want 1/0", claudeEntry.Success, claudeEntry.Failed)
 	}
@@ -135,7 +135,7 @@ func TestGetAPIKeyUsage_GroupsOpenAICompatibleByCompatName(t *testing.T) {
 	if !exists {
 		t.Fatalf("missing compat provider bucket in payload: %#v", payload)
 	}
-	vastEntry := vastBucket["https://www.vastnum.com/v1|vast-key"]
+	vastEntry := vastBucket["https://www.vastnum.com/v1|***ey"]
 	if vastEntry.Success != 1 || vastEntry.Failed != 0 {
 		t.Fatalf("vast totals = %d/%d, want 1/0", vastEntry.Success, vastEntry.Failed)
 	}

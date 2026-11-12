@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -68,6 +69,12 @@ func (h *Handler) putStringList(c *gin.Context, set func([]string), after func()
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	for _, item := range arr {
+		if isManagementSecretMask(item) && !containsMaskOf(h.cfg.APIKeys, item) {
+			c.JSON(400, gin.H{"error": "unresolved_masked_secret", "message": "masked api-key does not match a stored key"})
+			return
+		}
+	}
 	set(arr)
 	if after != nil {
 		after()
@@ -86,6 +93,10 @@ func (h *Handler) patchStringList(c *gin.Context, targetOf func() *[]string, aft
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	if (body.Value != nil && isManagementSecretMask(*body.Value)) || (body.New != nil && isManagementSecretMask(*body.New)) {
+		c.JSON(200, gin.H{"status": "ok"})
 		return
 	}
 	h.mu.Lock()
@@ -156,10 +167,10 @@ func (h *Handler) deleteFromStringList(c *gin.Context, targetOf func() *[]string
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) { writeRedactedJSON(c, gin.H{"api-keys": h.cfg.APIKeys}) }
 func (h *Handler) PutAPIKeys(c *gin.Context) {
 	h.putStringList(c, func(v []string) {
-		h.cfg.APIKeys = append([]string(nil), v...)
+		h.cfg.APIKeys = restoreMaskedStringList(v, h.cfg.APIKeys)
 	}, nil)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
@@ -171,12 +182,16 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 
 // gemini-api-key: []GeminiKey
 func (h *Handler) GetGeminiKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"gemini-api-key": h.geminiKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"gemini-api-key": h.geminiKeysWithAuthIndex()})
 }
 func (h *Handler) PutGeminiKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.GeminiKey }); !okRestore {
 		return
 	}
 	var arr []config.GeminiKey
@@ -238,7 +253,7 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 			base := strings.TrimSpace(baseRaw)
 			matches := make([]int, 0, 1)
 			for i := range h.cfg.GeminiKey {
-				if strings.TrimSpace(h.cfg.GeminiKey[i].APIKey) != match {
+				if !secretSelectorMatches(match, h.cfg.GeminiKey[i].APIKey) {
 					continue
 				}
 				if hasBase && strings.TrimSpace(h.cfg.GeminiKey[i].BaseURL) != base {
@@ -247,7 +262,7 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 				matches = append(matches, i)
 			}
 			if len(matches) > 1 {
-				c.JSON(400, gin.H{"error": "multiple items match; index is required"})
+				c.JSON(ambiguousSelectorStatus(match), gin.H{"error": "multiple items match; index is required"})
 				return
 			}
 			if len(matches) == 1 {
@@ -260,6 +275,9 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 		return
 	}
 
+	if !h.restoreEntryPatch(c, body.Value, h.cfg.GeminiKey[targetIndex]) {
+		return
+	}
 	entry := h.cfg.GeminiKey[targetIndex]
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
@@ -319,7 +337,7 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 			matchIndex := -1
 			matchCount := 0
 			for i := range h.cfg.GeminiKey {
-				if strings.TrimSpace(h.cfg.GeminiKey[i].APIKey) == val && strings.TrimSpace(h.cfg.GeminiKey[i].BaseURL) == base {
+				if secretSelectorMatches(val, h.cfg.GeminiKey[i].APIKey) && strings.TrimSpace(h.cfg.GeminiKey[i].BaseURL) == base {
 					matchIndex = i
 					matchCount++
 				}
@@ -329,7 +347,7 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 				return
 			}
 			if matchCount > 1 {
-				c.JSON(400, gin.H{"error": "multiple items match; index is required"})
+				c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match; index is required"})
 				return
 			}
 			h.cfg.GeminiKey = append(h.cfg.GeminiKey[:matchIndex], h.cfg.GeminiKey[matchIndex+1:]...)
@@ -341,7 +359,7 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 		matchIndex := -1
 		matchCount := 0
 		for i := range h.cfg.GeminiKey {
-			if strings.TrimSpace(h.cfg.GeminiKey[i].APIKey) == val {
+			if secretSelectorMatches(val, h.cfg.GeminiKey[i].APIKey) {
 				matchCount++
 				if matchIndex == -1 {
 					matchIndex = i
@@ -353,7 +371,7 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 			return
 		}
 		if matchCount > 1 {
-			c.JSON(400, gin.H{"error": "multiple items match api-key; base-url is required"})
+			c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match api-key; base-url is required"})
 			return
 		}
 		h.cfg.GeminiKey = append(h.cfg.GeminiKey[:matchIndex], h.cfg.GeminiKey[matchIndex+1:]...)
@@ -375,12 +393,16 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 
 // interactions-api-key: []GeminiKey
 func (h *Handler) GetInteractionsKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"interactions-api-key": h.interactionsKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"interactions-api-key": h.interactionsKeysWithAuthIndex()})
 }
 func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.InteractionsKey }); !okRestore {
 		return
 	}
 	var arr []config.GeminiKey
@@ -445,7 +467,7 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 			base := strings.TrimSpace(baseRaw)
 			matches := make([]int, 0, 1)
 			for i := range h.cfg.InteractionsKey {
-				if strings.TrimSpace(h.cfg.InteractionsKey[i].APIKey) != match {
+				if !secretSelectorMatches(match, h.cfg.InteractionsKey[i].APIKey) {
 					continue
 				}
 				if hasBase && strings.TrimSpace(h.cfg.InteractionsKey[i].BaseURL) != base {
@@ -454,7 +476,7 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 				matches = append(matches, i)
 			}
 			if len(matches) > 1 {
-				c.JSON(400, gin.H{"error": "multiple items match; index is required"})
+				c.JSON(ambiguousSelectorStatus(match), gin.H{"error": "multiple items match; index is required"})
 				return
 			}
 			if len(matches) == 1 {
@@ -467,6 +489,9 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 		return
 	}
 
+	if !h.restoreEntryPatch(c, body.Value, h.cfg.InteractionsKey[targetIndex]) {
+		return
+	}
 	entry := h.cfg.InteractionsKey[targetIndex]
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
@@ -526,7 +551,7 @@ func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
 			matchIndex := -1
 			matchCount := 0
 			for i := range h.cfg.InteractionsKey {
-				if strings.TrimSpace(h.cfg.InteractionsKey[i].APIKey) == val && strings.TrimSpace(h.cfg.InteractionsKey[i].BaseURL) == base {
+				if secretSelectorMatches(val, h.cfg.InteractionsKey[i].APIKey) && strings.TrimSpace(h.cfg.InteractionsKey[i].BaseURL) == base {
 					matchIndex = i
 					matchCount++
 				}
@@ -536,7 +561,7 @@ func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
 				return
 			}
 			if matchCount > 1 {
-				c.JSON(400, gin.H{"error": "multiple items match; index is required"})
+				c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match; index is required"})
 				return
 			}
 			h.cfg.InteractionsKey = append(h.cfg.InteractionsKey[:matchIndex], h.cfg.InteractionsKey[matchIndex+1:]...)
@@ -548,7 +573,7 @@ func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
 		matchIndex := -1
 		matchCount := 0
 		for i := range h.cfg.InteractionsKey {
-			if strings.TrimSpace(h.cfg.InteractionsKey[i].APIKey) == val {
+			if secretSelectorMatches(val, h.cfg.InteractionsKey[i].APIKey) {
 				matchCount++
 				if matchIndex == -1 {
 					matchIndex = i
@@ -560,7 +585,7 @@ func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
 			return
 		}
 		if matchCount > 1 {
-			c.JSON(400, gin.H{"error": "multiple items match api-key; base-url is required"})
+			c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match api-key; base-url is required"})
 			return
 		}
 		h.cfg.InteractionsKey = append(h.cfg.InteractionsKey[:matchIndex], h.cfg.InteractionsKey[matchIndex+1:]...)
@@ -606,12 +631,16 @@ func (h *Handler) findExistingClaudeKey(existing []config.ClaudeKey, item config
 
 // claude-api-key: []ClaudeKey
 func (h *Handler) GetClaudeKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"claude-api-key": h.claudeKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"claude-api-key": h.claudeKeysWithAuthIndex()})
 }
 func (h *Handler) PutClaudeKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.ClaudeKey }); !okRestore {
 		return
 	}
 	var arr []config.ClaudeKey
@@ -683,10 +712,24 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.ClaudeKey) {
 		targetIndex = *body.Index
 	}
+	if targetIndex == -1 && body.Match != nil && isManagementSecretMask(strings.TrimSpace(*body.Match)) {
+		if idx, _, okMask := resolveMaskedAPIKey(c, *body.Match, len(h.cfg.ClaudeKey), func(i int) string { return h.cfg.ClaudeKey[i].APIKey }, func(i int) string { return h.cfg.ClaudeKey[i].BaseURL }); !okMask {
+			return
+		} else if idx >= 0 {
+			targetIndex = idx
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+			return
+		}
+	}
 	if targetIndex == -1 && body.Match != nil {
 		match := strings.TrimSpace(*body.Match)
 		for i := range h.cfg.ClaudeKey {
-			if h.cfg.ClaudeKey[i].APIKey == match {
+			if secretSelectorMatches(match, h.cfg.ClaudeKey[i].APIKey) {
+				if targetIndex != -1 && isManagementSecretMask(match) {
+					c.JSON(http.StatusConflict, gin.H{"error": "ambiguous_masked_secret"})
+					return
+				}
 				targetIndex = i
 				break
 			}
@@ -697,6 +740,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 		return
 	}
 
+	if !h.restoreEntryPatch(c, body.Value, h.cfg.ClaudeKey[targetIndex]) {
+		return
+	}
 	oldEntry := h.cfg.ClaudeKey[targetIndex]
 	entry := oldEntry
 	identityChanged := (body.Value.APIKey != nil && strings.TrimSpace(*body.Value.APIKey) != oldEntry.APIKey) ||
@@ -830,11 +876,23 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if idx, masked, okMask := resolveMaskedAPIKey(c, val, len(h.cfg.ClaudeKey), func(i int) string { return h.cfg.ClaudeKey[i].APIKey }, func(i int) string { return h.cfg.ClaudeKey[i].BaseURL }); !okMask {
+			return
+		} else if masked {
+			if idx < 0 {
+				c.JSON(404, gin.H{"error": "item not found"})
+				return
+			}
+			h.cfg.ClaudeKey = append(h.cfg.ClaudeKey[:idx], h.cfg.ClaudeKey[idx+1:]...)
+			h.cfg.SanitizeClaudeKeys()
+			h.persistLocked(c)
+			return
+		}
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.ClaudeKey, 0, len(h.cfg.ClaudeKey))
 			for _, v := range h.cfg.ClaudeKey {
-				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+				if secretSelectorMatches(val, v.APIKey) && strings.TrimSpace(v.BaseURL) == base {
 					continue
 				}
 				out = append(out, v)
@@ -848,7 +906,7 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 		matchIndex := -1
 		matchCount := 0
 		for i := range h.cfg.ClaudeKey {
-			if strings.TrimSpace(h.cfg.ClaudeKey[i].APIKey) == val {
+			if secretSelectorMatches(val, h.cfg.ClaudeKey[i].APIKey) {
 				matchCount++
 				if matchIndex == -1 {
 					matchIndex = i
@@ -856,7 +914,7 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 			}
 		}
 		if matchCount > 1 {
-			c.JSON(400, gin.H{"error": "multiple items match api-key; base-url is required"})
+			c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match api-key; base-url is required"})
 			return
 		}
 		if matchIndex != -1 {
@@ -881,12 +939,16 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 
 // openai-compatibility: []OpenAICompatibility
 func (h *Handler) GetOpenAICompat(c *gin.Context) {
-	c.JSON(200, gin.H{"openai-compatibility": h.openAICompatibilityWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"openai-compatibility": h.openAICompatibilityWithAuthIndex()})
 }
 func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.OpenAICompatibility }); !okRestore {
 		return
 	}
 	var arr []config.OpenAICompatibility
@@ -965,6 +1027,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		return
 	}
 
+	if !h.restoreEntryPatch(c, body.Value, h.cfg.OpenAICompatibility[targetIndex]) {
+		return
+	}
 	entry := h.cfg.OpenAICompatibility[targetIndex]
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
@@ -1051,12 +1116,16 @@ func (h *Handler) DeleteOpenAICompat(c *gin.Context) {
 
 // vertex-api-key: []VertexCompatKey
 func (h *Handler) GetVertexCompatKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"vertex-api-key": h.vertexCompatKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"vertex-api-key": h.vertexCompatKeysWithAuthIndex()})
 }
 func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.VertexCompatAPIKey }); !okRestore {
 		return
 	}
 	var arr []config.VertexCompatKey
@@ -1116,11 +1185,21 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.VertexCompatAPIKey) {
 		targetIndex = *body.Index
 	}
+	if targetIndex == -1 && body.Match != nil && isManagementSecretMask(strings.TrimSpace(*body.Match)) {
+		if idx, _, okMask := resolveMaskedAPIKey(c, *body.Match, len(h.cfg.VertexCompatAPIKey), func(i int) string { return h.cfg.VertexCompatAPIKey[i].APIKey }, func(i int) string { return h.cfg.VertexCompatAPIKey[i].BaseURL }); !okMask {
+			return
+		} else if idx >= 0 {
+			targetIndex = idx
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+			return
+		}
+	}
 	if targetIndex == -1 && body.Match != nil {
 		match := strings.TrimSpace(*body.Match)
 		if match != "" {
 			for i := range h.cfg.VertexCompatAPIKey {
-				if h.cfg.VertexCompatAPIKey[i].APIKey == match {
+				if secretSelectorMatches(match, h.cfg.VertexCompatAPIKey[i].APIKey) {
 					targetIndex = i
 					break
 				}
@@ -1132,6 +1211,9 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 		return
 	}
 
+	if !h.restoreEntryPatch(c, body.Value, h.cfg.VertexCompatAPIKey[targetIndex]) {
+		return
+	}
 	entry := h.cfg.VertexCompatAPIKey[targetIndex]
 	if body.Value.APIKey != nil {
 		trimmed := strings.TrimSpace(*body.Value.APIKey)
@@ -1188,11 +1270,23 @@ func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if idx, masked, okMask := resolveMaskedAPIKey(c, val, len(h.cfg.VertexCompatAPIKey), func(i int) string { return h.cfg.VertexCompatAPIKey[i].APIKey }, func(i int) string { return h.cfg.VertexCompatAPIKey[i].BaseURL }); !okMask {
+			return
+		} else if masked {
+			if idx < 0 {
+				c.JSON(404, gin.H{"error": "item not found"})
+				return
+			}
+			h.cfg.VertexCompatAPIKey = append(h.cfg.VertexCompatAPIKey[:idx], h.cfg.VertexCompatAPIKey[idx+1:]...)
+			h.cfg.SanitizeVertexCompatKeys()
+			h.persistLocked(c)
+			return
+		}
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.VertexCompatKey, 0, len(h.cfg.VertexCompatAPIKey))
 			for _, v := range h.cfg.VertexCompatAPIKey {
-				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+				if secretSelectorMatches(val, v.APIKey) && strings.TrimSpace(v.BaseURL) == base {
 					continue
 				}
 				out = append(out, v)
@@ -1206,7 +1300,7 @@ func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
 		matchIndex := -1
 		matchCount := 0
 		for i := range h.cfg.VertexCompatAPIKey {
-			if strings.TrimSpace(h.cfg.VertexCompatAPIKey[i].APIKey) == val {
+			if secretSelectorMatches(val, h.cfg.VertexCompatAPIKey[i].APIKey) {
 				matchCount++
 				if matchIndex == -1 {
 					matchIndex = i
@@ -1214,7 +1308,7 @@ func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
 			}
 		}
 		if matchCount > 1 {
-			c.JSON(400, gin.H{"error": "multiple items match api-key; base-url is required"})
+			c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match api-key; base-url is required"})
 			return
 		}
 		if matchIndex != -1 {
@@ -1536,12 +1630,16 @@ func (h *Handler) DeleteOAuthRequestScopedErrors(c *gin.Context) {
 
 // codex-api-key: []CodexKey
 func (h *Handler) GetCodexKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"codex-api-key": h.codexKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"codex-api-key": h.codexKeysWithAuthIndex()})
 }
 func (h *Handler) PutCodexKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.CodexKey }); !okRestore {
 		return
 	}
 	var arr []config.CodexKey
@@ -1607,10 +1705,24 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.CodexKey) {
 		targetIndex = *body.Index
 	}
+	if targetIndex == -1 && body.Match != nil && isManagementSecretMask(strings.TrimSpace(*body.Match)) {
+		if idx, _, okMask := resolveMaskedAPIKey(c, *body.Match, len(h.cfg.CodexKey), func(i int) string { return h.cfg.CodexKey[i].APIKey }, func(i int) string { return h.cfg.CodexKey[i].BaseURL }); !okMask {
+			return
+		} else if idx >= 0 {
+			targetIndex = idx
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+			return
+		}
+	}
 	if targetIndex == -1 && body.Match != nil {
 		match := strings.TrimSpace(*body.Match)
 		for i := range h.cfg.CodexKey {
-			if h.cfg.CodexKey[i].APIKey == match {
+			if secretSelectorMatches(match, h.cfg.CodexKey[i].APIKey) {
+				if targetIndex != -1 && isManagementSecretMask(match) {
+					c.JSON(http.StatusConflict, gin.H{"error": "ambiguous_masked_secret"})
+					return
+				}
 				targetIndex = i
 				break
 			}
@@ -1621,6 +1733,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		return
 	}
 
+	if !h.restoreEntryPatch(c, body.Value, h.cfg.CodexKey[targetIndex]) {
+		return
+	}
 	entry := h.cfg.CodexKey[targetIndex]
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
@@ -1686,11 +1801,23 @@ func (h *Handler) DeleteCodexKey(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if idx, masked, okMask := resolveMaskedAPIKey(c, val, len(h.cfg.CodexKey), func(i int) string { return h.cfg.CodexKey[i].APIKey }, func(i int) string { return h.cfg.CodexKey[i].BaseURL }); !okMask {
+			return
+		} else if masked {
+			if idx < 0 {
+				c.JSON(404, gin.H{"error": "item not found"})
+				return
+			}
+			h.cfg.CodexKey = append(h.cfg.CodexKey[:idx], h.cfg.CodexKey[idx+1:]...)
+			h.cfg.SanitizeCodexKeys()
+			h.persistLocked(c)
+			return
+		}
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.CodexKey, 0, len(h.cfg.CodexKey))
 			for _, v := range h.cfg.CodexKey {
-				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+				if secretSelectorMatches(val, v.APIKey) && strings.TrimSpace(v.BaseURL) == base {
 					continue
 				}
 				out = append(out, v)
@@ -1704,7 +1831,7 @@ func (h *Handler) DeleteCodexKey(c *gin.Context) {
 		matchIndex := -1
 		matchCount := 0
 		for i := range h.cfg.CodexKey {
-			if strings.TrimSpace(h.cfg.CodexKey[i].APIKey) == val {
+			if secretSelectorMatches(val, h.cfg.CodexKey[i].APIKey) {
 				matchCount++
 				if matchIndex == -1 {
 					matchIndex = i
@@ -1712,7 +1839,7 @@ func (h *Handler) DeleteCodexKey(c *gin.Context) {
 			}
 		}
 		if matchCount > 1 {
-			c.JSON(400, gin.H{"error": "multiple items match api-key; base-url is required"})
+			c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match api-key; base-url is required"})
 			return
 		}
 		if matchIndex != -1 {
@@ -1737,13 +1864,17 @@ func (h *Handler) DeleteCodexKey(c *gin.Context) {
 
 // xai-api-key: []XAIKey
 func (h *Handler) GetXAIKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"xai-api-key": h.xaiKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"xai-api-key": h.xaiKeysWithAuthIndex()})
 }
 
 func (h *Handler) PutXAIKeys(c *gin.Context) {
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.XAIKey }); !okRestore {
 		return
 	}
 	var arr []config.XAIKey
@@ -1808,10 +1939,24 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.XAIKey) {
 		targetIndex = *body.Index
 	}
+	if targetIndex == -1 && body.Match != nil && isManagementSecretMask(strings.TrimSpace(*body.Match)) {
+		if idx, _, okMask := resolveMaskedAPIKey(c, *body.Match, len(h.cfg.XAIKey), func(i int) string { return h.cfg.XAIKey[i].APIKey }, func(i int) string { return h.cfg.XAIKey[i].BaseURL }); !okMask {
+			return
+		} else if idx >= 0 {
+			targetIndex = idx
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+			return
+		}
+	}
 	if targetIndex == -1 && body.Match != nil {
 		match := strings.TrimSpace(*body.Match)
 		for i := range h.cfg.XAIKey {
-			if h.cfg.XAIKey[i].APIKey == match {
+			if secretSelectorMatches(match, h.cfg.XAIKey[i].APIKey) {
+				if targetIndex != -1 && isManagementSecretMask(match) {
+					c.JSON(http.StatusConflict, gin.H{"error": "ambiguous_masked_secret"})
+					return
+				}
 				targetIndex = i
 				break
 			}
@@ -1822,6 +1967,9 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 		return
 	}
 
+	if !h.restoreEntryPatch(c, body.Value, h.cfg.XAIKey[targetIndex]) {
+		return
+	}
 	entry := h.cfg.XAIKey[targetIndex]
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
@@ -1884,11 +2032,23 @@ func (h *Handler) DeleteXAIKey(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if idx, masked, okMask := resolveMaskedAPIKey(c, val, len(h.cfg.XAIKey), func(i int) string { return h.cfg.XAIKey[i].APIKey }, func(i int) string { return h.cfg.XAIKey[i].BaseURL }); !okMask {
+			return
+		} else if masked {
+			if idx < 0 {
+				c.JSON(404, gin.H{"error": "item not found"})
+				return
+			}
+			h.cfg.XAIKey = append(h.cfg.XAIKey[:idx], h.cfg.XAIKey[idx+1:]...)
+			h.cfg.SanitizeXAIKeys()
+			h.persistLocked(c)
+			return
+		}
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.XAIKey, 0, len(h.cfg.XAIKey))
 			for _, entry := range h.cfg.XAIKey {
-				if strings.TrimSpace(entry.APIKey) == val && strings.TrimSpace(entry.BaseURL) == base {
+				if secretSelectorMatches(val, entry.APIKey) && strings.TrimSpace(entry.BaseURL) == base {
 					continue
 				}
 				out = append(out, entry)
@@ -1902,7 +2062,7 @@ func (h *Handler) DeleteXAIKey(c *gin.Context) {
 		matchIndex := -1
 		matchCount := 0
 		for i := range h.cfg.XAIKey {
-			if strings.TrimSpace(h.cfg.XAIKey[i].APIKey) == val {
+			if secretSelectorMatches(val, h.cfg.XAIKey[i].APIKey) {
 				matchCount++
 				if matchIndex == -1 {
 					matchIndex = i
@@ -1910,7 +2070,7 @@ func (h *Handler) DeleteXAIKey(c *gin.Context) {
 			}
 		}
 		if matchCount > 1 {
-			c.JSON(400, gin.H{"error": "multiple items match api-key; base-url is required"})
+			c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match api-key; base-url is required"})
 			return
 		}
 		if matchIndex != -1 {
@@ -1935,13 +2095,17 @@ func (h *Handler) DeleteXAIKey(c *gin.Context) {
 
 // meta-api-key: []MetaKey
 func (h *Handler) GetMetaKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"meta-api-key": h.metaKeysWithAuthIndex()})
+	writeRedactedJSON(c, gin.H{"meta-api-key": h.metaKeysWithAuthIndex()})
 }
 
 func (h *Handler) PutMetaKeys(c *gin.Context) {
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var okRestore bool
+	if data, okRestore = h.restoreListBody(c, data, func() any { return h.cfg.MetaKey }); !okRestore {
 		return
 	}
 	var arr []config.MetaKey
@@ -2005,10 +2169,24 @@ func (h *Handler) PatchMetaKey(c *gin.Context) {
 	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.MetaKey) {
 		targetIndex = *body.Index
 	}
+	if targetIndex == -1 && body.Match != nil && isManagementSecretMask(strings.TrimSpace(*body.Match)) {
+		if idx, _, okMask := resolveMaskedAPIKey(c, *body.Match, len(h.cfg.MetaKey), func(i int) string { return h.cfg.MetaKey[i].APIKey }, func(i int) string { return h.cfg.MetaKey[i].BaseURL }); !okMask {
+			return
+		} else if idx >= 0 {
+			targetIndex = idx
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+			return
+		}
+	}
 	if targetIndex == -1 && body.Match != nil {
 		match := strings.TrimSpace(*body.Match)
 		for i := range h.cfg.MetaKey {
-			if h.cfg.MetaKey[i].APIKey == match {
+			if secretSelectorMatches(match, h.cfg.MetaKey[i].APIKey) {
+				if targetIndex != -1 && isManagementSecretMask(match) {
+					c.JSON(http.StatusConflict, gin.H{"error": "ambiguous_masked_secret"})
+					return
+				}
 				targetIndex = i
 				break
 			}
@@ -2019,6 +2197,9 @@ func (h *Handler) PatchMetaKey(c *gin.Context) {
 		return
 	}
 
+	if !h.restoreEntryPatch(c, body.Value, h.cfg.MetaKey[targetIndex]) {
+		return
+	}
 	entry := h.cfg.MetaKey[targetIndex]
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
@@ -2075,11 +2256,23 @@ func (h *Handler) DeleteMetaKey(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if idx, masked, okMask := resolveMaskedAPIKey(c, val, len(h.cfg.MetaKey), func(i int) string { return h.cfg.MetaKey[i].APIKey }, func(i int) string { return h.cfg.MetaKey[i].BaseURL }); !okMask {
+			return
+		} else if masked {
+			if idx < 0 {
+				c.JSON(404, gin.H{"error": "item not found"})
+				return
+			}
+			h.cfg.MetaKey = append(h.cfg.MetaKey[:idx], h.cfg.MetaKey[idx+1:]...)
+			h.cfg.SanitizeMetaKeys()
+			h.persistLocked(c)
+			return
+		}
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.MetaKey, 0, len(h.cfg.MetaKey))
 			for _, entry := range h.cfg.MetaKey {
-				if strings.TrimSpace(entry.APIKey) == val && strings.TrimSpace(entry.BaseURL) == base {
+				if secretSelectorMatches(val, entry.APIKey) && strings.TrimSpace(entry.BaseURL) == base {
 					continue
 				}
 				out = append(out, entry)
@@ -2093,7 +2286,7 @@ func (h *Handler) DeleteMetaKey(c *gin.Context) {
 		matchIndex := -1
 		matchCount := 0
 		for i := range h.cfg.MetaKey {
-			if strings.TrimSpace(h.cfg.MetaKey[i].APIKey) == val {
+			if secretSelectorMatches(val, h.cfg.MetaKey[i].APIKey) {
 				matchCount++
 				if matchIndex == -1 {
 					matchIndex = i
@@ -2101,7 +2294,7 @@ func (h *Handler) DeleteMetaKey(c *gin.Context) {
 			}
 		}
 		if matchCount > 1 {
-			c.JSON(400, gin.H{"error": "multiple items match api-key; base-url is required"})
+			c.JSON(ambiguousSelectorStatus(val), gin.H{"error": "multiple items match api-key; base-url is required"})
 			return
 		}
 		if matchIndex != -1 {

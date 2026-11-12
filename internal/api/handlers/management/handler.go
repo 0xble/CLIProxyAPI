@@ -30,6 +30,11 @@ type attemptInfo struct {
 	lastActivity time.Time // track last activity for cleanup
 }
 
+// ManagementRedactionCapability identifies builds whose management config reads
+// always redact secrets, independently of management write access. Launchers may
+// check the binary for this stable marker before permitting writable management.
+const ManagementRedactionCapability = "cliproxyapi-capability:management-redaction-always-v1"
+
 // attemptCleanupInterval controls how often stale IP entries are purged
 const attemptCleanupInterval = 1 * time.Hour
 
@@ -73,6 +78,7 @@ type configReloadSnapshot struct {
 
 // NewHandler creates a new management handler instance.
 func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Manager) *Handler {
+	log.WithField("capability", ManagementRedactionCapability).Debug("management redaction capability active")
 	envSecret, _ := os.LookupEnv("MANAGEMENT_PASSWORD")
 	envSecret = strings.TrimSpace(envSecret)
 

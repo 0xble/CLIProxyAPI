@@ -26,7 +26,7 @@ func (s *Server) registerManagementRoutes() {
 	s.engine.GET("/v0/management/oauth-callback", s.managementReadOnlyMiddleware(), s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
 
 	mgmt := s.engine.Group("/v0/management")
-	mgmt.Use(s.managementReadOnlyMiddleware(), s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	mgmt.Use(s.managementReadOnlyMiddleware(), s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), s.mgmt.RestoreMaskedPatchMiddleware())
 	{
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
