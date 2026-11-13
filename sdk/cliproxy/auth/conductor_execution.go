@@ -1289,7 +1289,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 
 		entry := logEntryWithRequestID(ctx)
-		debugLogAuthSelection(entry, auth, provider, routeModel)
+		logAuthSelection(entry, auth, provider, routeModel)
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		execCtx = m.WithAuthTransport(execCtx, auth)
@@ -1590,7 +1590,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 
 		entry := logEntryWithRequestID(ctx)
-		debugLogAuthSelection(entry, auth, provider, routeModel)
+		logAuthSelection(entry, auth, provider, routeModel)
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		execCtx = m.WithAuthTransport(execCtx, auth)
@@ -2003,7 +2003,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 
 		entry := logEntryWithRequestID(ctx)
-		debugLogAuthSelection(entry, auth, provider, routeModel)
+		logAuthSelection(entry, auth, provider, routeModel)
 		if selection != nil {
 			if errRuntimeAuth := m.bindHomeSelectionRuntimeAuth(ctx, opts, selection); errRuntimeAuth != nil {
 				selection.End("runtime_auth_bind_failed")
@@ -3423,11 +3423,21 @@ func logEntryWithRequestID(ctx context.Context) *log.Entry {
 	return log.NewEntry(log.StandardLogger())
 }
 
-func debugLogAuthSelection(entry *log.Entry, auth *Auth, provider string, model string) {
-	if !log.IsLevelEnabled(log.DebugLevel) {
+func logAuthSelection(entry *log.Entry, auth *Auth, provider string, model string) {
+	if !log.IsLevelEnabled(log.InfoLevel) {
 		return
 	}
 	if entry == nil || auth == nil {
+		return
+	}
+	// Reuse the management/usage index for default-level attribution. Do not
+	// expose the auth ID, account identity, or API key in this event.
+	entry.WithFields(log.Fields{
+		"auth_index": auth.Index,
+		"provider":   provider,
+		"model":      model,
+	}).Info("Selected upstream credential")
+	if !log.IsLevelEnabled(log.DebugLevel) {
 		return
 	}
 	accountType, accountInfo := auth.AccountInfo()
@@ -3555,6 +3565,9 @@ func warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, mod
 		} else {
 			entry = log.NewEntry(log.StandardLogger())
 		}
+	}
+	if auth != nil {
+		entry = entry.WithField("auth_index", auth.Index)
 	}
 	authIdent := formatAuthIdentity(auth, provider)
 	errSummary := safeErrorDiagnosticForLog(err)
