@@ -764,6 +764,26 @@ func (c *Client) AddAPIKey(key string) error {
 	})
 }
 
+// ambiguousMaskedAPIKey reports whether the entry at index is a redacted value
+// that another entry shares. Servers that redact reads (for example "***1234")
+// restore masked entries on write by matching the mask to a stored key, so a
+// whole-list replace cannot tell colliding entries apart and could edit or drop
+// the wrong credential.
+func ambiguousMaskedAPIKey(keys []string, index int) bool {
+	value := strings.TrimSpace(keys[index])
+	if !strings.HasPrefix(value, "***") {
+		return false
+	}
+	for i, other := range keys {
+		if i != index && strings.TrimSpace(other) == value {
+			return true
+		}
+	}
+	return false
+}
+
+const errAmbiguousMaskedAPIKey = "api-key at index %d is redacted and indistinguishable from another entry; edit config.yaml directly to change it"
+
 // EditAPIKey replaces an API key at the given index. expected is the key value
 // the caller displayed when the user chose this index; if the server list no
 // longer has that value at this position the write is refused instead of
@@ -775,6 +795,9 @@ func (c *Client) EditAPIKey(index int, newValue string, expected ...string) erro
 		}
 		if len(expected) > 0 && keys[index] != expected[0] {
 			return nil, fmt.Errorf("api-keys changed since selection (entry at index %d no longer matches); please refresh", index)
+		}
+		if ambiguousMaskedAPIKey(keys, index) {
+			return nil, fmt.Errorf(errAmbiguousMaskedAPIKey, index)
 		}
 		keys[index] = newValue
 		return keys, nil
@@ -796,6 +819,9 @@ func (c *Client) DeleteAPIKey(index int, expected ...string) error {
 		}
 		if len(expected) > 0 && keys[index] != expected[0] {
 			return nil, fmt.Errorf("api-keys changed since selection (entry at index %d no longer matches); please refresh", index)
+		}
+		if ambiguousMaskedAPIKey(keys, index) {
+			return nil, fmt.Errorf(errAmbiguousMaskedAPIKey, index)
 		}
 		return append(keys[:index], keys[index+1:]...), nil
 	}, func() error {
