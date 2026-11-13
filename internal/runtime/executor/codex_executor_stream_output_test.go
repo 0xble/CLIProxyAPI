@@ -572,6 +572,16 @@ func TestCodexTerminalFailureErrClassifiesStatus(t *testing.T) {
 			wantStatus: http.StatusTooManyRequests,
 		},
 		{
+			name:       "exhausted api-key credit balance",
+			event:      `{"type":"error","error":{"type":"insufficient_quota","code":"credit_balance_exhausted","message":"You have no credits remaining.","param":null},"sequence_number":2}`,
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			name:       "billing hard limit",
+			event:      `{"type":"response.failed","response":{"error":{"type":"invalid_request_error","code":"billing_hard_limit_reached","message":"Billing hard limit has been reached."}}}`,
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
 			name:       "unknown upstream failure",
 			event:      `{"type":"response.failed","response":{"error":{"type":"upstream_error","code":"unknown","message":"Upstream failed."}}}`,
 			wantStatus: http.StatusBadGateway,

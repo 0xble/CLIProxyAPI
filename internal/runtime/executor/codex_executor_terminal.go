@@ -199,6 +199,12 @@ func codexTerminalFailureStatus(body []byte) int {
 		return http.StatusForbidden
 	case errorType == "rate_limit_error", errorCode == "rate_limit_exceeded":
 		return http.StatusTooManyRequests
+	// OpenAI answers an exhausted API-key balance with HTTP 429 insufficient_quota.
+	// The same failure arrives as an in-stream error event, so it must keep that
+	// status for configured quota rules to cool the credential instead of a 502.
+	case errorType == "insufficient_quota", errorCode == "insufficient_quota",
+		errorCode == "credit_balance_exhausted", errorCode == "billing_hard_limit_reached":
+		return http.StatusTooManyRequests
 	case errorType == "invalid_request_error", errorType == "bad_request_error", errorType == "image_generation_user_error", errorCode == "invalid_value", errorCode == "invalid_request_error":
 		return http.StatusBadRequest
 	default:
