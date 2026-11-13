@@ -19,6 +19,13 @@ Patch review:
 
 Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA, then verify Codex Responses and Claude inference. The source gate is `bin/ci gate`.
 
+## Credential attribution and session priority
+
+- Default-level selection logs emit `Selected upstream credential` with the existing opaque `auth_index`, `provider`, `model`, and request ID when present. Upstream failure warnings carry the same index. Join this index to masked management config entries or existing per-attempt usage records; do not add raw auth IDs, account identities, or key suffixes to the new event.
+- Completion attribution already belongs to `UsageReporter`: its records retain `AuthIndex` and the request trace for both successful and failed attempts. No second completion channel or credential identity is introduced.
+- Session affinity intentionally outranks credential priority while the bound credential remains eligible. Priority chooses new bindings and fallback/rebinding; it does not preempt healthy sessions after a priority change or higher-priority recovery. This is already documented in `config.example.yaml` and covered by `TestManagerSessionAffinityPreservesBindingAcrossHigherPriorityRecovery`. Upstream [#4808](https://github.com/router-for-me/CLIProxyAPI/issues/4808) fixed the reverse behavior; the opt-in priority-failback proposal [#5089](https://github.com/router-for-me/CLIProxyAPI/pull/5089) was closed. Strict priority preemption would require a separately accepted routing change, not a bug fix.
+- Verification: manager-boundary INFO logging tests exercise execute, stream and count paths with two synthetic credentials, plus the real log formatter; warning tests cover HTTP and non-HTTP failures; usage tests cover successful and failed completion records. The canonical gate remains `bin/ci gate`. No live inference is needed.
+
 ## Background
 
 Maintained fork: `0xble/CLIProxyAPI` of `router-for-me/CLIProxyAPI`.
