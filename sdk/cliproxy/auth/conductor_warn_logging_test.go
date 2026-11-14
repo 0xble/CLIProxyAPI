@@ -313,7 +313,7 @@ func TestWarnLogOnAuthUnavailable_IncludesNonCooldownCandidatesAndSkipsDisabled(
 			"claude-sonnet": {
 				Status:        StatusError,
 				Unavailable:   true,
-				StatusMessage: "upstream unavailable",
+				StatusMessage: "provider-secret\nforged log line",
 			},
 		},
 	}
@@ -345,8 +345,11 @@ func TestWarnLogOnAuthUnavailable_IncludesNonCooldownCandidatesAndSkipsDisabled(
 		if entry.Level != log.WarnLevel || !strings.Contains(entry.Message, "auth unavailable") {
 			continue
 		}
-		if !strings.Contains(entry.Message, "claude-transient.json") || !strings.Contains(entry.Message, "upstream unavailable") || !strings.Contains(entry.Message, "are unavailable") {
+		if !strings.Contains(entry.Message, "claude-transient.json") || !strings.Contains(entry.Message, "reason=unavailable") || !strings.Contains(entry.Message, "remaining=unknown") || !strings.Contains(entry.Message, "are unavailable") {
 			t.Fatalf("unexpected non-cooldown Warn log: %q", entry.Message)
+		}
+		if strings.Contains(entry.Message, "provider-secret") || strings.ContainsAny(entry.Message, "\r\n") {
+			t.Fatalf("non-cooldown Warn log included unsafe status detail: %q", entry.Message)
 		}
 		if strings.Contains(entry.Message, "claude-disabled.json") {
 			t.Fatalf("disabled credential appeared in Warn log: %q", entry.Message)

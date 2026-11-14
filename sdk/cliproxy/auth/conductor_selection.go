@@ -2980,13 +2980,17 @@ func authUnavailableSummary(auth *Auth, model string, blockedReason blockReason,
 	}
 	ident := formatAuthIdentity(auth, auth.Provider)
 	reason := ""
+	var quota QuotaState
+	var lastErr *Error
 	if model != "" && len(auth.ModelStates) > 0 {
 		if state := existingModelState(auth, model); state != nil {
-			reason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+			quota = state.Quota
+			lastErr = state.LastError
+			reason = authUnavailableReason(state.StatusMessage, quota, lastErr, blockedReason)
 		}
 	}
 	if reason == "" {
-		reason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+		reason = authUnavailableReason(auth.StatusMessage, auth.Quota, auth.LastError, blockedReason)
 	}
 	if reason == "" {
 		if blockedReason == blockReasonCooldown {
@@ -2995,11 +2999,36 @@ func authUnavailableSummary(auth *Auth, model string, blockedReason blockReason,
 			reason = "unavailable"
 		}
 	}
-	remaining := "0s"
+	remaining := "unknown"
 	if !next.IsZero() && next.After(now) {
 		remaining = next.Sub(now).Round(time.Second).String()
 	}
 	return fmt.Sprintf("[%s, reason=%s, remaining=%s]", ident, reason, remaining)
+}
+
+func authUnavailableReason(statusMessage string, quota QuotaState, lastErr *Error, blockedReason blockReason) string {
+	for _, candidate := range []string{quota.Reason, statusMessage} {
+		if safeAuthReason(candidate) != "" {
+			return safeAuthReason(candidate)
+		}
+	}
+	if lastErr != nil && safeAuthReason(lastErr.Code) != "" {
+		return safeAuthReason(lastErr.Code)
+	}
+	return ""
+}
+
+func safeAuthReason(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 64 {
+		return ""
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' && r != ':' {
+			return ""
+		}
+	}
+	return value
 }
 
 func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, err error) {
