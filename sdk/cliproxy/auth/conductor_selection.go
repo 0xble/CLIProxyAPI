@@ -3020,6 +3020,9 @@ func authUnavailableReason(statusMessage string, quota QuotaState, lastErr *Erro
 
 func safeAuthReason(value string) string {
 	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "cloudflare challenge") {
+		return "cloudflare_challenge"
+	}
 	if value == "" || len(value) > 64 {
 		return ""
 	}
