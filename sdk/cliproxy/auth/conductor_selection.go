@@ -2974,28 +2974,64 @@ func isAuthUnavailableError(err error) bool {
 	return false
 }
 
-func authCoolingSummary(auth *Auth, model string, next time.Time, now time.Time) string {
+func authUnavailableSummary(auth *Auth, model string, blockedReason blockReason, next time.Time, now time.Time) string {
 	if auth == nil {
 		return ""
 	}
 	ident := formatAuthIdentity(auth, auth.Provider)
 	reason := ""
+	var quota QuotaState
+	var lastErr *Error
 	if model != "" && len(auth.ModelStates) > 0 {
 		if state := existingModelState(auth, model); state != nil {
-			reason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+			quota = state.Quota
+			lastErr = state.LastError
+			reason = authUnavailableReason(state.StatusMessage, quota, lastErr, blockedReason)
 		}
 	}
 	if reason == "" {
-		reason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+		reason = authUnavailableReason(auth.StatusMessage, auth.Quota, auth.LastError, blockedReason)
 	}
 	if reason == "" {
-		reason = "cooldown"
+		if blockedReason == blockReasonCooldown {
+			reason = "cooldown"
+		} else {
+			reason = "unavailable"
+		}
 	}
-	remaining := "0s"
+	remaining := "unknown"
 	if !next.IsZero() && next.After(now) {
 		remaining = next.Sub(now).Round(time.Second).String()
 	}
 	return fmt.Sprintf("[%s, reason=%s, remaining=%s]", ident, reason, remaining)
+}
+
+func authUnavailableReason(statusMessage string, quota QuotaState, lastErr *Error, blockedReason blockReason) string {
+	for _, candidate := range []string{quota.Reason, statusMessage} {
+		if safeAuthReason(candidate) != "" {
+			return safeAuthReason(candidate)
+		}
+	}
+	if lastErr != nil && safeAuthReason(lastErr.Code) != "" {
+		return safeAuthReason(lastErr.Code)
+	}
+	return ""
+}
+
+func safeAuthReason(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "cloudflare challenge") {
+		return "cloudflare_challenge"
+	}
+	if value == "" || len(value) > 64 {
+		return ""
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' && r != ':' {
+			return ""
+		}
+	}
+	return value
 }
 
 func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, err error) {
@@ -3015,7 +3051,8 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 	}
 	registryRef := registry.GetGlobalRegistry()
 
-	coolingSummaries := make([]string, 0)
+	blockedSummaries := make([]string, 0)
+	coolingCount := 0
 	totalCandidates := 0
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
@@ -3047,19 +3084,26 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 		totalCandidates++
 		checkModel := m.selectionModelForAuth(candidate, model)
 		blocked, reason, next := isAuthBlockedForModelForRequest(ctx, candidate, checkModel, now, opts.Headers)
-		if blocked && reason == blockReasonCooldown {
-			coolingSummaries = append(coolingSummaries, authCoolingSummary(candidate, checkModel, next, now))
+		if blocked && reason != blockReasonDisabled {
+			blockedSummaries = append(blockedSummaries, authUnavailableSummary(candidate, checkModel, reason, next, now))
+			if reason == blockReasonCooldown {
+				coolingCount++
+			}
 		}
 	}
 
-	if len(coolingSummaries) > 0 {
-		sort.Strings(coolingSummaries)
+	if len(blockedSummaries) > 0 {
+		sort.Strings(blockedSummaries)
 		entry := logEntryWithRequestID(ctx)
 		providerText := strings.Join(providers, ",")
+		stateText := "are unavailable"
+		if coolingCount == len(blockedSummaries) {
+			stateText = "are in cooldown"
+		}
 		if len(providers) == 1 {
-			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (provider=%s) are in cooldown: %s", len(coolingSummaries), totalCandidates, model, providerText, strings.Join(coolingSummaries, ", "))
+			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (provider=%s) %s: %s", len(blockedSummaries), totalCandidates, model, providerText, stateText, strings.Join(blockedSummaries, ", "))
 		} else {
-			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (providers=%s) are in cooldown: %s", len(coolingSummaries), totalCandidates, model, providerText, strings.Join(coolingSummaries, ", "))
+			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (providers=%s) %s: %s", len(blockedSummaries), totalCandidates, model, providerText, stateText, strings.Join(blockedSummaries, ", "))
 		}
 	}
 }
