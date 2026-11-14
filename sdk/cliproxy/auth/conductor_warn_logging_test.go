@@ -320,9 +320,14 @@ func TestWarnLogOnAuthUnavailable_IncludesNonCooldownCandidatesAndSkipsDisabled(
 	disabled := &Auth{
 		ID:       "auth-disabled",
 		Provider: "claude",
-		Status:   StatusDisabled,
-		Disabled: true,
+		Status:   StatusActive,
 		FileName: "claude-disabled.json",
+		ModelStates: map[string]*ModelState{
+			"claude-sonnet": {
+				Status:        StatusDisabled,
+				StatusMessage: "model disabled",
+			},
+		},
 	}
 	reg := registry.GetGlobalRegistry()
 	for _, auth := range []*Auth{blocked, disabled} {
