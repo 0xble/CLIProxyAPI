@@ -300,6 +300,57 @@ func TestWarnLogOnAuthUnavailable_SessionAffinityLegacyPath(t *testing.T) {
 	}
 }
 
+func TestWarnLogOnAuthUnavailable_IncludesNonCooldownCandidatesAndSkipsDisabled(t *testing.T) {
+	hook := setupTestLoggerHook(t)
+	m := NewManager(nil, nil, nil)
+
+	blocked := &Auth{
+		ID:       "auth-transient",
+		Provider: "claude",
+		Status:   StatusActive,
+		FileName: "claude-transient.json",
+		ModelStates: map[string]*ModelState{
+			"claude-sonnet": {
+				Status:        StatusError,
+				Unavailable:   true,
+				StatusMessage: "upstream unavailable",
+			},
+		},
+	}
+	disabled := &Auth{
+		ID:       "auth-disabled",
+		Provider: "claude",
+		Status:   StatusDisabled,
+		Disabled: true,
+		FileName: "claude-disabled.json",
+	}
+	reg := registry.GetGlobalRegistry()
+	for _, auth := range []*Auth{blocked, disabled} {
+		reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: "claude-sonnet"}})
+		if _, err := m.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	}
+	m.RegisterExecutor(&mockCustomErrorExecutor{identifier: "claude"})
+
+	m.warnLogAuthUnavailable(context.Background(), []string{"claude"}, "claude-sonnet", cliproxyexecutor.Options{}, nil, &Error{Code: "auth_unavailable"})
+
+	for _, entry := range hook.AllEntries() {
+		if entry.Level != log.WarnLevel || !strings.Contains(entry.Message, "auth unavailable") {
+			continue
+		}
+		if !strings.Contains(entry.Message, "claude-transient.json") || !strings.Contains(entry.Message, "upstream unavailable") || !strings.Contains(entry.Message, "are unavailable") {
+			t.Fatalf("unexpected non-cooldown Warn log: %q", entry.Message)
+		}
+		if strings.Contains(entry.Message, "claude-disabled.json") {
+			t.Fatalf("disabled credential appeared in Warn log: %q", entry.Message)
+		}
+		return
+	}
+	t.Fatalf("expected auth unavailable Warn log, got logs: %#v", hook.AllEntries())
+}
+
 func TestWarnLogOnAuthUnavailable_MixedProviders(t *testing.T) {
 	previousCooldown := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)

@@ -2974,7 +2974,7 @@ func isAuthUnavailableError(err error) bool {
 	return false
 }
 
-func authCoolingSummary(auth *Auth, model string, next time.Time, now time.Time) string {
+func authUnavailableSummary(auth *Auth, model string, blockedReason blockReason, next time.Time, now time.Time) string {
 	if auth == nil {
 		return ""
 	}
@@ -2989,7 +2989,11 @@ func authCoolingSummary(auth *Auth, model string, next time.Time, now time.Time)
 		reason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
 	}
 	if reason == "" {
-		reason = "cooldown"
+		if blockedReason == blockReasonCooldown {
+			reason = "cooldown"
+		} else {
+			reason = "unavailable"
+		}
 	}
 	remaining := "0s"
 	if !next.IsZero() && next.After(now) {
@@ -3015,7 +3019,8 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 	}
 	registryRef := registry.GetGlobalRegistry()
 
-	coolingSummaries := make([]string, 0)
+	blockedSummaries := make([]string, 0)
+	coolingCount := 0
 	totalCandidates := 0
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
@@ -3047,19 +3052,26 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 		totalCandidates++
 		checkModel := m.selectionModelForAuth(candidate, model)
 		blocked, reason, next := isAuthBlockedForModelForRequest(ctx, candidate, checkModel, now, opts.Headers)
-		if blocked && reason == blockReasonCooldown {
-			coolingSummaries = append(coolingSummaries, authCoolingSummary(candidate, checkModel, next, now))
+		if blocked && reason != blockReasonDisabled {
+			blockedSummaries = append(blockedSummaries, authUnavailableSummary(candidate, checkModel, reason, next, now))
+			if reason == blockReasonCooldown {
+				coolingCount++
+			}
 		}
 	}
 
-	if len(coolingSummaries) > 0 {
-		sort.Strings(coolingSummaries)
+	if len(blockedSummaries) > 0 {
+		sort.Strings(blockedSummaries)
 		entry := logEntryWithRequestID(ctx)
 		providerText := strings.Join(providers, ",")
+		stateText := "are unavailable"
+		if coolingCount == len(blockedSummaries) {
+			stateText = "are in cooldown"
+		}
 		if len(providers) == 1 {
-			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (provider=%s) are in cooldown: %s", len(coolingSummaries), totalCandidates, model, providerText, strings.Join(coolingSummaries, ", "))
+			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (provider=%s) %s: %s", len(blockedSummaries), totalCandidates, model, providerText, stateText, strings.Join(blockedSummaries, ", "))
 		} else {
-			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (providers=%s) are in cooldown: %s", len(coolingSummaries), totalCandidates, model, providerText, strings.Join(coolingSummaries, ", "))
+			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (providers=%s) %s: %s", len(blockedSummaries), totalCandidates, model, providerText, stateText, strings.Join(blockedSummaries, ", "))
 		}
 	}
 }
