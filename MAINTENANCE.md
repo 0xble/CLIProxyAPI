@@ -1,23 +1,23 @@
 # Maintenance
 
-## Current candidate: v8.0.69
+## Current candidate: v8.0.72
 
-Upstream releases `v8.0.68` (`42f9adb9acd35b936e2d9fbc68356c9925987a73`) and `v8.0.69` (`f7ae8feeb3710319f524730849fbe32fde1751e4`) are merged in order over fork main `304abbf7c602e112dfb83f3acda09d8912f4a038`. That base is v8.0.67 plus always-redacted management reads with masked-secret round trips (PR #40). CPA-001 through CPA-009 and the management redaction contract are preserved. The full summary is in the release history below.
+Upstream releases `v8.0.70`, `v8.0.71` and `v8.0.72` (`e96d4c4818851cf0e96d27b2bc8b67379e449d9e`) are merged in order over fork main `1e15895a61ded2bb6b2ae8db6b7fe7d084e8dd9c` (v8.0.69 plus the TUI masked-key guard, the in-stream credit-exhaustion 429 classification and transient-unavailable explanations, #45). CPA-001 through CPA-010 and the management redaction contract are preserved.
 
-Conflicts, all in v8.0.68:
+Upstream changes reviewed: credential-wide pool cooldown after a terminal 429 (`credentialRetryAfter`, `4da9f685`), a standalone in-flight request count on the management API, Muse Code client endpoints relayed under `/muse-code`, OAuth plugin models kept credential-bound, Gemini/Antigravity zero-output terminations failed before the HTTP 200 commit, one-hour caching of verified management secret hashes, plugin scheduler `ExcludeCandidates`, Gemini interactions translation, bbolt as a direct dependency, and the Antigravity pool-wide TOS pause disabled by default.
 
-- `claude_executor_execute.go` and `claude_executor_stream.go`: the tracked payload paths keep the fork's CPA-005 `thinking` entry and add upstream's `betas` entry (`02ec93d0`, beta profiles preserved across thread turns).
-- `internal/api/server_test.go`: takes upstream's hijacked-websocket teardown, which is equivalent to the fork's earlier WaitGroup fix but waits after `Close`.
-- `internal/util/nocopy_invariant_test.go`: keeps the fork's reviewed entry for `selector_weighted.go`. Upstream added the same entry with the same count.
+Conflicts, all in v8.0.70:
+
+- `sdk/cliproxy/auth/scheduler.go` (`isCredentialBlocked`) and `selector.go` (`isAuthBlockedForModelForRequest`): CPA-007's reserve exclusion and upstream's `credentialRetryAfter` block independently. The scheduler blocks on either. The selector returns the later of the two recheck times when both apply. `TestQuotaReserveAndCredentialRetryDeadlineBothBlock` covers each alone, both with each one later, and the scheduler.
+
+Post-merge repair: the fork's Muse Code relay entry point `ApplyRequestScopedErrorResult` predates upstream threading the rule cooldown through `matchRequestScopedErrorAction`, so the merged tree did not compile. It now passes the cooldown through, as the execution paths do.
 
 Patch review:
 
-- The new `/v1/tunnel` WebSocket route sits outside the API-key middleware. Its hub authenticates against its own `allowedKeys` and rejects every request while none are configured, and the local config sets none.
-- `server.shutdown-timeout` is opt-in.
-- The refresh-recovery backoff change in `conductor_refresh.go` does not touch CPA-003's SIWC schedule in `auto_refresh_loop.go`.
 - `isQuotaReserveExcluded` still gates selector, scheduler and cooldown availability.
+- Upstream's credential-wide pool cooldown makes a terminal 429 bench a credential for every model, which agrees with CPA-001 rule cooldowns.
 
-Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA, then verify Codex Responses and Claude inference. The source gate is `bin/ci gate`.
+Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
 ## Background
 
@@ -26,7 +26,9 @@ Both default branches are `main`. Canonical checkout: `~/Repos/CLIProxyAPI`.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
 Accepted upstream baseline before CPA-001: `d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5` (`v8.0.23`).
-Source candidate upstream release: `f7ae8feeb3710319f524730849fbe32fde1751e4` (`v8.0.69`), merged after `42f9adb9acd35b936e2d9fbc68356c9925987a73` (`v8.0.68`) over fork main `304abbf7c602e112dfb83f3acda09d8912f4a038` (`v8.0.67` plus always-redacted management reads) after reviewing the official release notes. v8.0.68:
+Source candidate upstream release: `e96d4c4818851cf0e96d27b2bc8b67379e449d9e` (`v8.0.72`), merged after `v8.0.70` and `v8.0.71` over fork main `1e15895a61ded2bb6b2ae8db6b7fe7d084e8dd9c` (`v8.0.69` plus #45) after reviewing the official release notes. The v8.0.70 conflict kept CPA-007's reserve exclusion alongside upstream's credential-wide `credentialRetryAfter`. CPA-010 is added. CPA-001 through CPA-009 are retained.
+
+Prior candidate upstream release: `f7ae8feeb3710319f524730849fbe32fde1751e4` (`v8.0.69`), merged after `42f9adb9acd35b936e2d9fbc68356c9925987a73` (`v8.0.68`) over fork main `304abbf7c602e112dfb83f3acda09d8912f4a038` (`v8.0.67` plus always-redacted management reads) after reviewing the official release notes. v8.0.68:
 
 - releases Codex refresh claims on pre-send errors and defers macOS wakes
 - adds Devin failover
@@ -162,7 +164,16 @@ This fork supplies the local gateway build from fork `main` and tracks upstream 
 - Durable regression: `TestCodexDuplexSummaryRequestScopedRuleAppliesCooldownThroughManager` in `internal/runtime/executor/codex_websockets_duplex_health_test.go` drives a real manager duplex session to a 400 summary failure with a matching stop-and-cooldown 1h rule and asserts the HTTP 400 stream error and about 1h of model cooldown. It fails without the patch: no stream error reaches the conductor.
 - Retirement condition: retire when a released upstream duplex compaction path hands rule-matched summary failures to the conductor and passes this regression.
 
-Use stable IDs `CPA-010` and onward for future logical patches.
+### CPA-010 — fail over an exhausted Codex API key before the stream commits
+
+- Required behavior: an OpenAI API key with no balance answers HTTP 200 and then an in-stream `error` frame (`insufficient_quota`, `credit_balance_exhausted` or `billing_hard_limit_reached`) right after the response preamble. That failure is classified 429 so `codex-api-key` quota rules cool the key. With `codex.stream-bootstrap-buffering` on, it also fails the attempt during bootstrap, before any byte reaches the client, so the conductor serves the request from the next credential in the same round. The websocket executor does the same. `request-retry` stays 0. With buffering off, the preamble is already committed and the error stays in-stream.
+- Why: the request that discovered an exhausted key returned "You have no credits remaining" to the caller (Hermes treats billing errors as non-retryable) even while subscription accounts were healthy.
+- Rejected design: holding only the preamble frames for API-key credentials with buffering off. The scanner budget is checked per line, so a preamble followed by a silent upstream is held indefinitely. Upstream's `TestResponsesLateInterruptDoesNotPoisonNextCreate` caught this: `response.created` never reached the client.
+- Source surfaces: `isCodexCreditExhaustedError` and `codexTerminalFailureStatus` in `internal/runtime/executor/codex_executor_terminal.go`; the bootstrap loop in `codex_executor_stream.go`; `failoverPending` in `codex_websockets_stream.go`.
+- Durable regressions: `internal/runtime/executor/codex_credit_exhausted_failover_test.go` (with buffering, fails over with 429; without it, stays in-stream) and `TestExecuteStream_CreditExhaustedBeforeFirstByteFailsOverWithoutRetryRounds` in `sdk/cliproxy/auth/conductor_stream_credit_failover_test.go` (request-retry 0, exhausted key then another credential, key cooled).
+- Retirement condition: retire when a released upstream fails a credit-exhausted API-key stream over before commit and passes these regressions.
+
+Use stable IDs `CPA-011` and onward for future logical patches.
 Upstream maintenance-contract issue/PR associations: none found when checked 2026-09-13.
 Retain this contract while maintaining the fork. Retire behavioral patches only after a released upstream implementation passes their complete regression contract.
 

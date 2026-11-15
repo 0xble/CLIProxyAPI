@@ -202,8 +202,7 @@ func codexTerminalFailureStatus(body []byte) int {
 	// OpenAI answers an exhausted API-key balance with HTTP 429 insufficient_quota.
 	// The same failure arrives as an in-stream error event, so it must keep that
 	// status for configured quota rules to cool the credential instead of a 502.
-	case errorType == "insufficient_quota", errorCode == "insufficient_quota",
-		errorCode == "credit_balance_exhausted", errorCode == "billing_hard_limit_reached":
+	case isCodexCreditExhaustedError(body):
 		return http.StatusTooManyRequests
 	case errorType == "invalid_request_error", errorType == "bad_request_error", errorType == "image_generation_user_error", errorCode == "invalid_value", errorCode == "invalid_request_error":
 		return http.StatusBadRequest
@@ -734,6 +733,22 @@ func newCodexBootstrapOverloadErr(body []byte) statusErr {
 // stream is a transient capacity rejection that a different credential may be able to serve.
 // Only these failures justify replacing the whole attempt during bootstrap; every other terminal
 // failure keeps the original in-stream delivery semantics so downstream behaviour is unchanged.
+// isCodexCreditExhaustedError reports whether a terminal failure says the credential has no
+// API balance left. Nothing was generated, and only a different credential can serve the
+// request, so it is safe to fail over while the response is still uncommitted.
+func isCodexCreditExhaustedError(body []byte) bool {
+	errorType := strings.ToLower(strings.TrimSpace(ojson.GetBytesNoCopy(body, "error.type").String()))
+	errorCode := strings.ToLower(strings.TrimSpace(ojson.GetBytesNoCopy(body, "error.code").String()))
+	switch {
+	case errorType == "insufficient_quota", errorCode == "insufficient_quota":
+		return true
+	case errorCode == "credit_balance_exhausted", errorCode == "billing_hard_limit_reached":
+		return true
+	default:
+		return false
+	}
+}
+
 func isCodexOverloadBootstrapFailure(body []byte) bool {
 	if isCodexTransientCapacityError(body) {
 		return true

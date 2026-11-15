@@ -403,6 +403,18 @@ func applyRequestScopedActionToResult(action string, cooldown time.Duration, okA
 	}
 }
 
+// ApplyRequestScopedErrorResult evaluates request-scoped error rules for auth
+// and applies any matched action code onto result before MarkResult.
+func (m *Manager) ApplyRequestScopedErrorResult(ctx context.Context, auth *Auth, err error, result *Result) (string, bool) {
+	var cfg *internalconfig.Config
+	if m != nil {
+		cfg = m.requestScopedErrorConfig(ctx)
+	}
+	action, cooldown, okAction := matchRequestScopedErrorAction(auth, err, cfg)
+	applyRequestScopedActionToResult(action, cooldown, okAction, result)
+	return action, okAction
+}
+
 func isRequestScopedStop(action string, okAction bool) bool {
 	return okAction && (action == RequestScopedActionStop || action == RequestScopedActionStopAndCooldown)
 }

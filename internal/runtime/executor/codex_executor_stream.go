@@ -283,9 +283,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					}
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
-					if isCodexOverloadBootstrapFailure(terminalBody) {
+					creditExhausted := isCodexCreditExhaustedError(terminalBody)
+					if creditExhausted || isCodexOverloadBootstrapFailure(terminalBody) {
 						timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
 						timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
+						if !timeoutReached && creditExhausted {
+							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap credit exhaustion after %d buffered lines, failing over", bufferedFrames)
+							return nil, streamErr
+						}
 						if !timeoutReached {
 							// Transient capacity rejection smuggled into an HTTP 200 stream. Fail the
 							// attempt before the downstream headers are committed so the conductor can

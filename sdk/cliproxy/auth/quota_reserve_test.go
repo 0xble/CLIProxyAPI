@@ -220,3 +220,59 @@ func markWithHeaders(ctx context.Context, manager *Manager, authID, model string
 	internallogging.SetResponseHeaders(ctx, headers)
 	manager.MarkResult(ctx, Result{AuthID: authID, Provider: "claude", Model: model, Success: true})
 }
+
+// The CPA-007 reserve exclusion and the credential-wide retry deadline added in
+// v8.0.70 block independently. Each must block on its own, and when both apply the
+// selector must recheck at the later deadline so neither is cut short.
+func TestQuotaReserveAndCredentialRetryDeadlineBothBlock(t *testing.T) {
+	now := time.Now()
+	reserveReset := now.Add(72 * time.Hour)
+	drained := func() *Auth {
+		auth := &Auth{ID: "lpg", Provider: "claude", Status: StatusActive, Metadata: lpgReservePolicyMetadata()}
+		auth.Quota.ObserveResponseHeadersForProvider("claude", claudeWeeklyHeaders("0.85", reserveReset), now)
+		return auth
+	}
+	reserveOnly := drained()
+	_, reserveRecheck := isQuotaReserveExcluded(reserveOnly, now)
+	if reserveRecheck.IsZero() {
+		t.Fatal("drained guarded credential is not reserve-excluded")
+	}
+
+	t.Run("reserve only", func(t *testing.T) {
+		blocked, _, next := isAuthBlockedForModel(reserveOnly, "", now)
+		if !blocked || !next.Equal(reserveRecheck) {
+			t.Fatalf("blocked=%v next=%v, want reserve recheck %v", blocked, next, reserveRecheck)
+		}
+	})
+	t.Run("retry deadline only", func(t *testing.T) {
+		auth := &Auth{ID: "plain", Provider: "claude", Status: StatusActive, credentialRetryAfter: now.Add(10 * time.Minute)}
+		blocked, _, next := isAuthBlockedForModel(auth, "", now)
+		if !blocked || !next.Equal(auth.credentialRetryAfter) {
+			t.Fatalf("blocked=%v next=%v, want retry deadline %v", blocked, next, auth.credentialRetryAfter)
+		}
+	})
+	t.Run("reserve recheck later than retry deadline", func(t *testing.T) {
+		auth := drained()
+		auth.credentialRetryAfter = now.Add(10 * time.Minute)
+		blocked, _, next := isAuthBlockedForModel(auth, "", now)
+		if !blocked || !next.Equal(reserveRecheck) {
+			t.Fatalf("blocked=%v next=%v, want later reserve recheck %v", blocked, next, reserveRecheck)
+		}
+	})
+	t.Run("retry deadline later than reserve recheck", func(t *testing.T) {
+		auth := drained()
+		auth.credentialRetryAfter = reserveRecheck.Add(time.Hour)
+		blocked, _, next := isAuthBlockedForModel(auth, "", now)
+		if !blocked || !next.Equal(auth.credentialRetryAfter) {
+			t.Fatalf("blocked=%v next=%v, want later retry deadline %v", blocked, next, auth.credentialRetryAfter)
+		}
+	})
+	t.Run("scheduler skips each", func(t *testing.T) {
+		retryOnly := &Auth{ID: "plain", Provider: "claude", Status: StatusActive, credentialRetryAfter: now.Add(10 * time.Minute)}
+		for _, auth := range []*Auth{reserveOnly, retryOnly} {
+			if !isCredentialBlocked(auth, 0, now) {
+				t.Fatalf("scheduler treats %s as available", auth.ID)
+			}
+		}
+	})
+}

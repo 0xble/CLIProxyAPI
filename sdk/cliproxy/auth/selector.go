@@ -1309,8 +1309,33 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 		}
 		return true, blockReasonCooldown, credNext
 	}
-	if excluded, recheckAt := isQuotaReserveExcluded(auth, now); excluded {
-		return true, blockReasonOther, recheckAt
+	// CPA-007 reserve exclusion and the credential-wide retry deadline block
+	// independently; when both apply, recheck at the later of the two.
+	reserveExcluded, reserveRecheckAt := isQuotaReserveExcluded(auth, now)
+	if !auth.credentialRetryAfter.IsZero() && auth.credentialRetryAfter.After(now) {
+		credNext := auth.credentialRetryAfter
+		if model != "" && len(auth.ModelStates) > 0 {
+			modelKey := canonicalModelLookupKey(model)
+			for stateModel, state := range auth.ModelStates {
+				if state == nil || canonicalModelLookupKey(stateModel) != modelKey {
+					continue
+				}
+				if state.Status == StatusDisabled {
+					return true, blockReasonDisabled, time.Time{}
+				}
+				stateBlocked, _, next := availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now)
+				if stateBlocked && next.After(credNext) {
+					credNext = next
+				}
+			}
+		}
+		if reserveExcluded && reserveRecheckAt.After(credNext) {
+			credNext = reserveRecheckAt
+		}
+		return true, blockReasonOther, credNext
+	}
+	if reserveExcluded {
+		return true, blockReasonOther, reserveRecheckAt
 	}
 	unavailable := codexRefreshUnavailableForRequest(ctx, auth, now, clientHeaders...)
 	if model != "" {
