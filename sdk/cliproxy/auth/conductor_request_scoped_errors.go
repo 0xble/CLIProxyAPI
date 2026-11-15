@@ -410,8 +410,8 @@ func (m *Manager) ApplyRequestScopedErrorResult(ctx context.Context, auth *Auth,
 	if m != nil {
 		cfg = m.requestScopedErrorConfig(ctx)
 	}
-	action, okAction := matchRequestScopedErrorAction(auth, err, cfg)
-	applyRequestScopedActionToResult(action, okAction, result)
+	action, cooldown, okAction := matchRequestScopedErrorAction(auth, err, cfg)
+	applyRequestScopedActionToResult(action, cooldown, okAction, result)
 	return action, okAction
 }
 
