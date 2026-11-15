@@ -170,14 +170,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if buffering {
 		bootstrapTimeout = e.cfg.Codex.StreamBootstrapTimeoutDuration()
 	}
-	// An exhausted API-key balance is reported in-stream right after the response preamble,
-	// so by default the preamble would already have committed the client stream. Hold only
-	// that preamble for API-key credentials, even with stream-bootstrap-buffering off, so the
-	// rejection can fail over to another credential before any byte reaches the client.
-	preambleOnly := !buffering && codexAuthUsesAPIKey(auth)
-	if preambleOnly {
-		buffering = true
-	}
 	// Start the bootstrap clock at response headers, before decoding may read body bytes.
 	responseReady := func(response *http.Response) {
 		if buffering && response.StatusCode >= 200 && response.StatusCode < 300 {
@@ -292,9 +284,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
 					creditExhausted := isCodexCreditExhaustedError(terminalBody)
-					// The API-key preamble hold only exists to fail over credit exhaustion; every
-					// other failure keeps the unbuffered in-stream delivery and classification.
-					if creditExhausted || (!preambleOnly && isCodexOverloadBootstrapFailure(terminalBody)) {
+					if creditExhausted || isCodexOverloadBootstrapFailure(terminalBody) {
 						timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
 						timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
 						if !timeoutReached && creditExhausted {
@@ -330,7 +320,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					bootstrapTerminalErr = streamErr
 					break
 				}
-				if isCodexBootstrapBufferableEvent(eventType, data) && (!preambleOnly || isCodexPreambleEvent(eventType)) {
+				if isCodexBootstrapBufferableEvent(eventType, data) {
 					isHandshake = true
 				}
 				switch eventType {
@@ -401,30 +391,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		scanner.SetBudgetChecker(nil)
 
-		if !streamStarted && bootstrapTerminalErr == nil && preambleOnly {
-			// The API-key preamble hold must end exactly like the unbuffered stream it replaces:
-			// a scan error is recorded, then the held preamble is flushed with an in-stream
-			// incomplete-stream error, or an empty stream closes with no payload.
-			closeBootstrapBody()
-			if errScan := scanner.Err(); errScan != nil {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			}
-			if len(bufferedChunks) == 0 {
-				emptyErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before first payload"}
-				helps.RecordAPIResponseError(ctx, e.cfg, emptyErr)
-				reporter.PublishFailure(ctx, emptyErr)
-				closedCh := make(chan cliproxyexecutor.StreamChunk)
-				close(closedCh)
-				return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: closedCh}, nil
-			}
-			streamErr := newCodexIncompleteStreamError()
-			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-			reporter.PublishFailure(ctx, streamErr)
-			bootstrapTerminalErr = streamErr
-		}
 		if !streamStarted && bootstrapTerminalErr == nil {
 			closeBootstrapBody()
 			if errScan := scanner.Err(); errScan != nil {

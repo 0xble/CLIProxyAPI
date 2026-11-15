@@ -749,19 +749,6 @@ func isCodexCreditExhaustedError(body []byte) bool {
 	}
 }
 
-// isCodexPreambleEvent reports whether a frame belongs to the response preamble the upstream
-// sends before it accepts or rejects the turn. It is the narrow hold used for API-key
-// credentials when stream-bootstrap-buffering is off: anything else releases the stream, so
-// generation is never delayed.
-func isCodexPreambleEvent(eventType string) bool {
-	switch eventType {
-	case "response.created", "response.in_progress", "codex.rate_limits", "codex.response.metadata", "response.metadata":
-		return true
-	default:
-		return false
-	}
-}
-
 func isCodexOverloadBootstrapFailure(body []byte) bool {
 	if isCodexTransientCapacityError(body) {
 		return true
