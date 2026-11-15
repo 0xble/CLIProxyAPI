@@ -292,7 +292,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
 					creditExhausted := isCodexCreditExhaustedError(terminalBody)
-					if creditExhausted || isCodexOverloadBootstrapFailure(terminalBody) {
+					// The API-key preamble hold only exists to fail over credit exhaustion; every
+					// other failure keeps the unbuffered in-stream delivery and classification.
+					if creditExhausted || (!preambleOnly && isCodexOverloadBootstrapFailure(terminalBody)) {
 						timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
 						timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
 						if !timeoutReached && creditExhausted {
@@ -399,6 +401,30 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		scanner.SetBudgetChecker(nil)
 
+		if !streamStarted && bootstrapTerminalErr == nil && preambleOnly {
+			// The API-key preamble hold must end exactly like the unbuffered stream it replaces:
+			// a scan error is recorded, then the held preamble is flushed with an in-stream
+			// incomplete-stream error, or an empty stream closes with no payload.
+			closeBootstrapBody()
+			if errScan := scanner.Err(); errScan != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+			}
+			if len(bufferedChunks) == 0 {
+				emptyErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before first payload"}
+				helps.RecordAPIResponseError(ctx, e.cfg, emptyErr)
+				reporter.PublishFailure(ctx, emptyErr)
+				closedCh := make(chan cliproxyexecutor.StreamChunk)
+				close(closedCh)
+				return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: closedCh}, nil
+			}
+			streamErr := newCodexIncompleteStreamError()
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.PublishFailure(ctx, streamErr)
+			bootstrapTerminalErr = streamErr
+		}
 		if !streamStarted && bootstrapTerminalErr == nil {
 			closeBootstrapBody()
 			if errScan := scanner.Err(); errScan != nil {
