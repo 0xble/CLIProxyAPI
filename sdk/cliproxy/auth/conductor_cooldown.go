@@ -1505,17 +1505,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 	modelKey := canonicalModelKey(result.Model)
-	// A billing credit exhaustion is credential-wide for API keys. OAuth
-	// subscription credentials retain model-scoped quota behavior.
-	if !result.CredentialScope && result.Error != nil && isCreditBalanceTooLowResultError(result.Error) {
-		m.mu.RLock()
-		auth := m.auths[result.AuthID]
-		apiKey := auth != nil && auth.AuthKind() == AuthKindAPIKey
-		m.mu.RUnlock()
-		if apiKey {
-			result.CredentialScope = true
-		}
-	}
 
 	var authSnapshot *Auth
 	cooldownStateChanged := false
