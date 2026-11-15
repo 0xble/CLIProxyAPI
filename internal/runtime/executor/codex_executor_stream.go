@@ -170,6 +170,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if buffering {
 		bootstrapTimeout = e.cfg.Codex.StreamBootstrapTimeoutDuration()
 	}
+	// An exhausted API-key balance is reported in-stream right after the response preamble,
+	// so by default the preamble would already have committed the client stream. Hold only
+	// that preamble for API-key credentials, even with stream-bootstrap-buffering off, so the
+	// rejection can fail over to another credential before any byte reaches the client.
+	preambleOnly := !buffering && codexAuthUsesAPIKey(auth)
+	if preambleOnly {
+		buffering = true
+	}
 	// Start the bootstrap clock at response headers, before decoding may read body bytes.
 	responseReady := func(response *http.Response) {
 		if buffering && response.StatusCode >= 200 && response.StatusCode < 300 {
@@ -283,9 +291,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					}
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
-					if isCodexOverloadBootstrapFailure(terminalBody) {
+					creditExhausted := isCodexCreditExhaustedError(terminalBody)
+					if creditExhausted || isCodexOverloadBootstrapFailure(terminalBody) {
 						timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
 						timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
+						if !timeoutReached && creditExhausted {
+							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap credit exhaustion after %d buffered lines, failing over", bufferedFrames)
+							return nil, streamErr
+						}
 						if !timeoutReached {
 							// Transient capacity rejection smuggled into an HTTP 200 stream. Fail the
 							// attempt before the downstream headers are committed so the conductor can
@@ -315,7 +328,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					bootstrapTerminalErr = streamErr
 					break
 				}
-				if isCodexBootstrapBufferableEvent(eventType, data) {
+				if isCodexBootstrapBufferableEvent(eventType, data) && (!preambleOnly || isCodexPreambleEvent(eventType)) {
 					isHandshake = true
 				}
 				switch eventType {
