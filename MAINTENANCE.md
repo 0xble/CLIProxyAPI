@@ -1,21 +1,16 @@
 # Maintenance
 
-## Current candidate: v8.0.72
+## Current candidate: v8.0.73
 
-Upstream releases `v8.0.70`, `v8.0.71` and `v8.0.72` (`e96d4c4818851cf0e96d27b2bc8b67379e449d9e`) are merged in order over fork main `1e15895a61ded2bb6b2ae8db6b7fe7d084e8dd9c` (v8.0.69 plus the TUI masked-key guard, the in-stream credit-exhaustion 429 classification and transient-unavailable explanations, #45). CPA-001 through CPA-010 and the management redaction contract are preserved.
+Upstream release `v8.0.73` (`43806c865da7d47f9252316e95e315ad9f885b84`) is merged cleanly over fork main `a544c2df168d4a1a78df469b6dd3ca491700dd49` (v8.0.72 plus CPA-010, #46). CPA-001 through CPA-010 and the management redaction contract are preserved. No conflicts.
 
-Upstream changes reviewed: credential-wide pool cooldown after a terminal 429 (`credentialRetryAfter`, `4da9f685`), a standalone in-flight request count on the management API, Muse Code client endpoints relayed under `/muse-code`, OAuth plugin models kept credential-bound, Gemini/Antigravity zero-output terminations failed before the HTTP 200 commit, one-hour caching of verified management secret hashes, plugin scheduler `ExcludeCandidates`, Gemini interactions translation, bbolt as a direct dependency, and the Antigravity pool-wide TOS pause disabled by default.
-
-Conflicts, all in v8.0.70:
-
-- `sdk/cliproxy/auth/scheduler.go` (`isCredentialBlocked`) and `selector.go` (`isAuthBlockedForModelForRequest`): CPA-007's reserve exclusion and upstream's `credentialRetryAfter` block independently. The scheduler blocks on either. The selector returns the later of the two recheck times when both apply. `TestQuotaReserveAndCredentialRetryDeadlineBothBlock` covers each alone, both with each one later, and the scheduler.
-
-Post-merge repair: the fork's Muse Code relay entry point `ApplyRequestScopedErrorResult` predates upstream threading the rule cooldown through `matchRequestScopedErrorAction`, so the merged tree did not compile. It now passes the cooldown through, as the execution paths do.
+Upstream changes reviewed: Claude `json_schema` response format mapped to `output_config.format`, Gemini 4 models in the registry with native `thinkingLevel` preserved, Gemini 429 `Retry-After`/`RetryInfo` hints honored in cooldown, no credential cooldown on Gemini zero-output 502s, Gemini inline images surfaced as `image_generation_call` in Responses, built-in executors wrapped through the builder hook on every registration path, and plugin credential identities preserved in v8 upload and delete (`SynthesizeAuthFileDetailed`).
 
 Patch review:
 
-- `isQuotaReserveExcluded` still gates selector, scheduler and cooldown availability.
-- Upstream's credential-wide pool cooldown makes a terminal 429 bench a credential for every model, which agrees with CPA-001 rule cooldowns.
+- The file synthesizer still validates CPA-007 quota-guard policy before the plugin parser, and the new detailed-synthesis return only reports plugin claims.
+- The executor-wrapping hook changes registration, not execution; CPA-010's credit-exhaustion classification and bootstrap failover stay in the Codex executor paths.
+- `isQuotaReserveExcluded` and `credentialRetryAfter` still gate selector and scheduler together.
 
 Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
@@ -26,7 +21,9 @@ Both default branches are `main`. Canonical checkout: `~/Repos/CLIProxyAPI`.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
 Accepted upstream baseline before CPA-001: `d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5` (`v8.0.23`).
-Source candidate upstream release: `e96d4c4818851cf0e96d27b2bc8b67379e449d9e` (`v8.0.72`), merged after `v8.0.70` and `v8.0.71` over fork main `1e15895a61ded2bb6b2ae8db6b7fe7d084e8dd9c` (`v8.0.69` plus #45) after reviewing the official release notes. The v8.0.70 conflict kept CPA-007's reserve exclusion alongside upstream's credential-wide `credentialRetryAfter`. CPA-010 is added. CPA-001 through CPA-009 are retained.
+Source candidate upstream release: `43806c865da7d47f9252316e95e315ad9f885b84` (`v8.0.73`), merged cleanly over fork main `a544c2df168d4a1a78df469b6dd3ca491700dd49` (`v8.0.72` plus CPA-010) after reviewing the official release notes. It maps Claude `json_schema` to `output_config.format`, adds Gemini 4 models, honors Gemini 429 retry hints, skips credential cooldown on Gemini zero-output 502s, wraps built-in executors through the builder hook, and preserves plugin credential identities in v8 upload and delete. CPA-001 through CPA-010 are retained.
+
+Prior candidate upstream release: `e96d4c4818851cf0e96d27b2bc8b67379e449d9e` (`v8.0.72`), merged after `v8.0.70` and `v8.0.71` over fork main `1e15895a61ded2bb6b2ae8db6b7fe7d084e8dd9c` (`v8.0.69` plus #45) after reviewing the official release notes. The v8.0.70 conflict kept CPA-007's reserve exclusion alongside upstream's credential-wide `credentialRetryAfter`. CPA-010 is added. CPA-001 through CPA-009 are retained.
 
 Prior candidate upstream release: `f7ae8feeb3710319f524730849fbe32fde1751e4` (`v8.0.69`), merged after `42f9adb9acd35b936e2d9fbc68356c9925987a73` (`v8.0.68`) over fork main `304abbf7c602e112dfb83f3acda09d8912f4a038` (`v8.0.67` plus always-redacted management reads) after reviewing the official release notes. v8.0.68:
 
