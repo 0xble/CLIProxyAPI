@@ -227,6 +227,13 @@ routing:
   #     keep the binding and return the error (or retry the same credential) instead.
   # Ignored when routing.session-affinity is false.
   session-affinity-rebind-on: "any"
+  # When true, a session sticks to one credential only within the highest available priority
+  # tier: a recovered higher tier reclaims the session on its next request, and a cooled-down
+  # or failing bound credential fails over within its tier first. Use this when priority encodes
+  # spending order (for example, prepaid API keys before subscriptions) but prompt-cache reuse
+  # still matters. Tier-locked bindings always rebind on failover, so rebind-on is ignored.
+  # Ignored when routing.session-affinity is false.
+  session-affinity-tier-locked: false
 
   # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
   force-model-prefix: false

@@ -174,7 +174,15 @@ This fork supplies the local gateway build from fork `main` and tracks upstream 
 - Durable regressions: `internal/runtime/executor/codex_credit_exhausted_failover_test.go` (with buffering, fails over with 429; without it, stays in-stream) and `TestExecuteStream_CreditExhaustedBeforeFirstByteFailsOverWithoutRetryRounds` in `sdk/cliproxy/auth/conductor_stream_credit_failover_test.go` (request-retry 0, exhausted key then another credential, key cooled).
 - Retirement condition: retire when a released upstream fails a credit-exhausted API-key stream over before commit and passes these regressions.
 
-Use stable IDs `CPA-011` and onward for future logical patches.
+### CPA-011 — tier-locked session affinity
+
+- Required behavior: with `routing.session-affinity` and `routing.session-affinity-tier-locked` both on, a session sticks to one credential only within the highest available priority tier. A recovered higher tier reclaims the session on its next request. A cooled-down or failing bound credential fails over to another credential in the same tier, then to the next tier. Tier-locked bindings always rebind on failover, so `session-affinity-rebind-on` is ignored. With the flag off, upstream's "binding outranks priority" contract is unchanged.
+- Why: Claude prompt caches are per account, so weighted round robin across same-tier credentials rewrites each long session's cache. Upstream affinity fixes that but lets a binding made during an API-key cooldown keep a session on a subscription after the keys recover, which breaks this Mac's rule that prepaid API-key credit is spent first. Upstream issue router-for-me/CLIProxyAPI#4808 covers the related priority/affinity ordering.
+- Source surfaces: `SessionAffinityConfig.TierLocked` and `bindableAuths` in `sdk/cliproxy/auth/selector.go`, applied to the explicit-session and LCP paths; `RoutingConfig.SessionAffinityTierLocked` in `internal/config/config_types.go`; `normalizedRoutingRuntimeState` in `sdk/cliproxy/service_config.go`.
+- Durable regressions: `TestManagerSessionAffinityTierLocked` in `sdk/cliproxy/auth/session_affinity_tier_locked_test.go` (single and mixed provider: sticky within tier, same-tier failover, next-tier fallback, higher-tier reclaim) and `TestRoutingRuntimeStateTierLockedAffinity` in `sdk/cliproxy/service_config_weight_test.go`.
+- Retirement condition: retire when a released upstream offers affinity that never holds a session below the highest available priority tier and passes these regressions.
+
+Use stable IDs `CPA-012` and onward for future logical patches.
 Upstream maintenance-contract issue/PR associations: none found when checked 2026-09-13.
 Retain this contract while maintaining the fork. Retire behavioral patches only after a released upstream implementation passes their complete regression contract.
 
