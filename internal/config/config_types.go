@@ -605,6 +605,13 @@ type RoutingConfig struct {
 	//     keep the binding and return the error (or retry the same credential) instead.
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
+
+	// SessionAffinityTierLocked keeps each session on one credential within the highest available
+	// priority tier instead of letting a binding outrank priority. When a higher tier recovers, the
+	// session moves up on its next request; when the bound credential cools down or fails, it fails
+	// over within its tier first. Tier-locked bindings always rebind on failover, so
+	// SessionAffinityRebindOn is ignored. Ignored when SessionAffinity is false.
+	SessionAffinityTierLocked bool `yaml:"session-affinity-tier-locked,omitempty" json:"session-affinity-tier-locked,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

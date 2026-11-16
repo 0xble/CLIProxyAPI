@@ -1418,6 +1418,9 @@ type SessionAffinitySelector struct {
 	subagentAffinity  bool
 	rebindOnQuotaOnly bool
 	rebindOnNever     bool
+	// tierLocked keeps a binding only while its credential is in the highest available
+	// priority tier, so a recovered higher tier reclaims the session on its next request.
+	tierLocked bool
 }
 
 const (
@@ -1582,6 +1585,10 @@ type SessionAffinityConfig struct {
 	TTL              time.Duration
 	SubagentAffinity *bool
 	RebindOn         string
+	// TierLocked restricts bindings to the highest available priority tier: a session sticks to
+	// one credential within that tier and moves up as soon as a higher tier becomes available.
+	// Tier-locked selection always rebinds on failover, so RebindOn is ignored.
+	TierLocked bool
 }
 
 // NewSessionAffinitySelector creates a new session-aware selector.
@@ -1605,6 +1612,9 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 		subagentAffinity = *cfg.SubagentAffinity
 	}
 	rebindMode := normalizeSessionAffinityRebindOn(cfg.RebindOn)
+	if cfg.TierLocked {
+		rebindMode = SessionAffinityRebindOnAny
+	}
 	return &SessionAffinitySelector{
 		fallback:          cfg.Fallback,
 		cache:             NewSessionCache(cfg.TTL),
@@ -1612,7 +1622,18 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 		subagentAffinity:  subagentAffinity,
 		rebindOnQuotaOnly: rebindMode == SessionAffinityRebindOnQuota,
 		rebindOnNever:     rebindMode == SessionAffinityRebindOnNever,
+		tierLocked:        cfg.TierLocked,
 	}
+}
+
+// bindableAuths returns the credentials a session may be bound to. Without tier locking every
+// available tier is bindable, so an established binding outranks priority. With tier locking only
+// the highest available tier is, so a binding never holds a session below a healthier tier.
+func (s *SessionAffinitySelector) bindableAuths(available []*Auth) []*Auth {
+	if s != nil && s.tierLocked {
+		return highestPriorityAuths(available)
+	}
+	return available
 }
 
 // Trees returns a backward-compatible in-memory session tree store.
@@ -1626,8 +1647,9 @@ func (s *SessionAffinitySelector) Trees() *cliproxysession.InMemorySessionTreeSt
 // are absolute authority. Requests without those signals use the Merkle LCP
 // matcher before retaining the legacy derived/hash fallback behavior.
 //
-// An established binding outranks credential priority: a bound credential that is still
-// available is reused even when a higher-priority credential recovers. Credential priority
+// By default an established binding outranks credential priority: a bound credential that is still
+// available is reused even when a higher-priority credential recovers. A tier-locked selector
+// instead rebinds the session into the highest available tier on every request. Credential priority
 // applies to cold bindings, requests without a session, and genuine bound-credential
 // failover, so the fallback selector only ever receives the highest available priority tier.
 //
@@ -1706,6 +1728,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if err != nil && !s.rebindOnNever {
 		return nil, err
 	}
+	available = s.bindableAuths(available)
 	fallbackAuths := highestPriorityAuths(available)
 
 	modelKey := canonicalModelKey(model)
@@ -1887,6 +1910,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if errAvailable != nil && !s.rebindOnNever {
 		return nil, true, errAvailable
 	}
+	available = s.bindableAuths(available)
 
 	var preservedAuthID string
 	if match, ok := s.matcher.MatchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength); ok {

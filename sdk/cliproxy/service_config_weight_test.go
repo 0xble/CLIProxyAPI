@@ -75,3 +75,33 @@ func TestApplyManagerConfigStopsReplacedServiceAffinitySelector(t *testing.T) {
 		t.Fatal("expected replaced selector to be stopped during routing config apply")
 	}
 }
+
+func TestRoutingRuntimeStateTierLockedAffinity(t *testing.T) {
+	state := normalizedRoutingRuntimeState(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			Strategy:                  "weighted-round-robin",
+			SessionAffinity:           true,
+			SessionAffinityTierLocked: true,
+			SessionAffinityRebindOn:   "never",
+		},
+	})
+	if !state.sessionAffinityTierLock {
+		t.Fatal("tier-locked affinity not carried into routing state")
+	}
+	if state.sessionAffinityRebindOn != coreauth.SessionAffinityRebindOnAny {
+		t.Fatalf("rebind-on = %q, want any: tier-locked bindings always rebind on failover", state.sessionAffinityRebindOn)
+	}
+	if _, ok := newRoutingSelector(state).(*coreauth.SessionAffinitySelector); !ok {
+		t.Fatalf("selector type = %T, want *auth.SessionAffinitySelector", newRoutingSelector(state))
+	}
+
+	off := normalizedRoutingRuntimeState(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{SessionAffinityTierLocked: true},
+	})
+	if off.sessionAffinityTierLock {
+		t.Fatal("tier lock must be ignored while session-affinity is off")
+	}
+	if off == state {
+		t.Fatal("routing states should differ so a config change recreates the selector")
+	}
+}

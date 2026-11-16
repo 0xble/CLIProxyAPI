@@ -61,6 +61,7 @@ type routingRuntimeState struct {
 	sessionAffinityTTL       time.Duration
 	sessionAffinitySubagents bool
 	sessionAffinityRebindOn  string
+	sessionAffinityTierLock  bool
 }
 
 func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
@@ -92,7 +93,9 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	if state.sessionAffinity && cfg.Routing.SessionAffinitySubagents != nil {
 		state.sessionAffinitySubagents = *cfg.Routing.SessionAffinitySubagents
 	}
-	if state.sessionAffinity {
+	if state.sessionAffinity && cfg.Routing.SessionAffinityTierLocked {
+		state.sessionAffinityTierLock = true
+	} else if state.sessionAffinity {
 		switch strings.ToLower(strings.TrimSpace(cfg.Routing.SessionAffinityRebindOn)) {
 		case coreauth.SessionAffinityRebindOnQuota:
 			state.sessionAffinityRebindOn = coreauth.SessionAffinityRebindOnQuota
@@ -128,6 +131,7 @@ func newRoutingSelectorWithExisting(state routingRuntimeState, existing coreauth
 			TTL:              state.sessionAffinityTTL,
 			SubagentAffinity: &subagents,
 			RebindOn:         state.sessionAffinityRebindOn,
+			TierLocked:       state.sessionAffinityTierLock,
 		})
 	}
 	return selector
