@@ -22,6 +22,10 @@ Activation covers the local CPA service only. Use the existing installer on the 
 
 Maintained fork: `0xble/CLIProxyAPI` of `router-for-me/CLIProxyAPI`.
 Both default branches are `main`. Canonical checkout: `~/Repos/CLIProxyAPI`.
+Upstream sync PRs land as merge commits, never squash. The installer derives
+`upstream_tag` from `git describe`, so a squash drops the release tag from
+`main`'s history and records the build as the previous release. Squash merging is
+disabled on the fork for that reason.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
 Accepted upstream baseline before CPA-001: `d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5` (`v8.0.23`).
