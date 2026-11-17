@@ -100,18 +100,19 @@ func TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader(t *testing.T) {
 		t.Fatalf("GetByID(%q) missing", authID)
 	}
 	state := updated.ModelStates[model]
-	if state == nil || !state.NextRetryAfter.After(before.Add(5*time.Second)) {
-		t.Fatalf("model NextRetryAfter = %v, want at least %v (7s cooldown)", state, before.Add(7*time.Second))
+	// MarkResult clamps the 7s Retry-After hint up to the 10s quota cooldown floor.
+	if state == nil || !state.NextRetryAfter.After(before.Add(9*time.Second)) {
+		t.Fatalf("model NextRetryAfter = %v, want at least %v (10s cooldown floor)", state, before.Add(10*time.Second))
 	}
 	// Since upstream 4da9f685 the terminal 429 reports when the pool actually recovers: the
-	// recorded cooldown, which honours the plugin's 7s hint but is raised to the manager's
-	// minimum quota cooldown. Require exactly that deadline, rounded up to whole seconds at
-	// the moment the header was built, so a regression to the per-attempt hint still fails.
+	// recorded cooldown, raised from the plugin's 7s hint to the manager's 10s quota floor.
+	// Require exactly that deadline, rounded up to whole seconds at the moment the header was
+	// built, so a regression to the per-attempt hint still fails.
 	ceilSeconds := func(d time.Duration) int { return int((d + time.Second - 1) / time.Second) }
 	got, errAtoi := strconv.Atoi(header)
 	lo, hi := ceilSeconds(state.NextRetryAfter.Sub(headerTo)), ceilSeconds(state.NextRetryAfter.Sub(headerFrom))
-	if errAtoi != nil || got < 7 || got < lo || got > hi {
-		t.Fatalf("SafeResponseHeaders(errExec) Retry-After = %q, want the recorded cooldown (%d-%d s, at least the 7s hint)", header, lo, hi)
+	if errAtoi != nil || got < 10 || got < lo || got > hi {
+		t.Fatalf("SafeResponseHeaders(errExec) Retry-After = %q, want the recorded cooldown (%d-%d s, at least the 10s floor)", header, lo, hi)
 	}
 }
 

@@ -1,18 +1,20 @@
 # Maintenance
 
-## Current candidate: v8.0.74
+## Current candidate: v8.0.76
 
-Upstream release `v8.0.74` (`14144df573c77e8e0e1eeaa450d3e63a068372df`) is merged over fork main `308848575c62941123e80360fd14d4c8bd0b0e7d`. CPA-001 through CPA-010 and the management redaction contract are preserved.
+Upstream releases `v8.0.75` (`c19787b25262`) and `v8.0.76` (`7df56074b252`) are merged over fork main `0cdae2d2c630db78111aa0a25eba7bb9227b1fb0` (v8.0.74 plus CPA-011, #49). CPA-001 through CPA-011 and the management redaction contract are preserved.
 
-Fork main `30884857` carries the reviewed v8.0.73 tree (#47) but as a squash commit, so it lost the v8.0.73 tag ancestry and the installer recorded it as `v8.0.72`. Merging v8.0.74 directly into that squash re-applied v8.0.73 hunks and duplicated `Service` fields in `sdk/cliproxy/service.go`. The merge tree is therefore the reviewed v8.0.73 head `aed162ee` merged with v8.0.74 (only `sdk/auth/filestore.go` needed resolution, and its result equals upstream's own v8.0.73 to v8.0.74 change), committed with parents `30884857` and v8.0.74. Upstream sync PRs must land as merge commits, never squash, because the installer derives `upstream_tag` from `git describe`. Squash merging is disabled on the fork for that reason.
+Upstream changes reviewed: user-text replacement payload rules enforced as a final executor barrier, bio/safety policy blocks classified as 400 request faults, nested and inferred Retry-After headers preserved on Codex overload and websocket errors, string and untyped Codex failures recognized, a bounded Codex scheduler continuity hook for plugins, Claude expired refresh tokens treated as terminal, `thread_not_found` when a pinned Claude thread owner is unavailable, non-refreshing auths with a past next check backed off, and moego upgraded to v0.1.0-alpha.4.
 
-Upstream changes reviewed in v8.0.74: Responses websocket pre-commit create errors fail over (`a8c9c8a4`), duplex quota errors after `response.created` route through the replay guard (`14144df5`), the Claude advisor tool model drops its thinking suffix, unsigned Gemini text chunks stay in one Claude text block, and the standard JSON and regexp packages are replaced with moego equivalents throughout.
+Conflicts, both in v8.0.76:
+
+- `sdk/cliproxy/auth/conductor_cooldown.go` (`isTerminalRefreshGrantMessage`): upstream added the same `"refresh token expired"` terminal match as fork commit `dd427f9d`. Upstream's line, with its comment, is kept. The fork change is now upstream.
+- `internal/pluginhost/rpc_client_error_test.go`: upstream raised the expected model cooldown from the plugin's 7s hint to the manager's 10s quota floor. The fork's exact recorded-deadline Retry-After assertion (from upstream `4da9f685`'s pool cooldown) is kept with the 10s floor.
 
 Patch review:
 
-- The websocket failover changes extend upstream's own pre-commit path. CPA-010's websocket `failoverPending` handling and credit-exhaustion classification are intact.
-- The JSON/regexp package swap is mechanical across fork-patched files, including `conductor_cooldown.go`, `selector.go` and `synthesizer/file.go`, with no logic change to CPA-001 or CPA-007.
-- `isQuotaReserveExcluded` and `credentialRetryAfter` still gate selector and scheduler together.
+- CPA-011's `bindableAuths` and CPA-007's `isQuotaReserveExcluded` are untouched by the merge. Upstream's selector and scheduler changes do not touch the tier-locked or reserve paths.
+- CPA-010's credit-exhaustion classification still runs ahead of upstream's new string and untyped Codex failure recognition in `codex_executor_terminal.go`.
 
 Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
@@ -20,10 +22,16 @@ Activation covers the local CPA service only. Use the existing installer on the 
 
 Maintained fork: `0xble/CLIProxyAPI` of `router-for-me/CLIProxyAPI`.
 Both default branches are `main`. Canonical checkout: `~/Repos/CLIProxyAPI`.
+Upstream sync PRs land as merge commits, never squash. The installer derives
+`upstream_tag` from `git describe`, so a squash drops the release tag from
+`main`'s history and records the build as the previous release. Squash merging is
+disabled on the fork for that reason.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
 Accepted upstream baseline before CPA-001: `d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5` (`v8.0.23`).
-Source candidate upstream release: `14144df573c77e8e0e1eeaa450d3e63a068372df` (`v8.0.74`), merged over fork main `308848575c62941123e80360fd14d4c8bd0b0e7d` (the v8.0.73 tree, squash-merged) after reviewing the official release notes. It adds pre-commit Responses websocket failover, routes duplex quota errors through the replay guard, and swaps in moego JSON and regexp packages. CPA-001 through CPA-010 are retained.
+Source candidate upstream release: `7df56074b252` (`v8.0.76`), merged with `v8.0.75` over fork main `0cdae2d2c630db78111aa0a25eba7bb9227b1fb0` (`v8.0.74` plus CPA-011) after reviewing the official release notes. Two conflicts resolved: upstream now carries the fork's expired-refresh-token terminal match, and the plugin Retry-After test keeps the fork's exact-deadline assertion with upstream's 10s floor. CPA-001 through CPA-011 are retained.
+
+Prior candidate upstream release: `14144df573c77e8e0e1eeaa450d3e63a068372df` (`v8.0.74`), merged over fork main `308848575c62941123e80360fd14d4c8bd0b0e7d` (the v8.0.73 tree, squash-merged) after reviewing the official release notes. It adds pre-commit Responses websocket failover, routes duplex quota errors through the replay guard, and swaps in moego JSON and regexp packages. CPA-001 through CPA-010 are retained.
 
 Prior candidate upstream release: `43806c865da7d47f9252316e95e315ad9f885b84` (`v8.0.73`), merged cleanly over fork main `a544c2df168d4a1a78df469b6dd3ca491700dd49` (`v8.0.72` plus CPA-010) after reviewing the official release notes. It maps Claude `json_schema` to `output_config.format`, adds Gemini 4 models, honors Gemini 429 retry hints, skips credential cooldown on Gemini zero-output 502s, wraps built-in executors through the builder hook, and preserves plugin credential identities in v8 upload and delete. CPA-001 through CPA-010 are retained.
 
