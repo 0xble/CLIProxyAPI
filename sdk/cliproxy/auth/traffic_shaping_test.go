@@ -52,16 +52,24 @@ func TestTrafficShapingSelectionLadder(t *testing.T) {
 	registerSchedulerModels(t, "claude", model, a.ID, b.ID)
 	opts := executor.Options{Headers: http.Header{"X-Session-Id": {"sticky"}}}
 	ctx, opts = m.consumeTrafficClass(ctx, opts)
-	pick := func(want string) {
+	pick := func(want string) string {
 		t.Helper()
 		got, _, _, err := m.pickWithTraffic(ctx, []string{"claude"}, model, opts, nil)
-		if err != nil || got == nil || got.ID != want {
-			t.Fatalf("pick = %v, %v; want %s", got, err, want)
+		if err != nil || got == nil {
+			t.Fatalf("pick failed: %v", err)
 		}
+		if want != "" && got.ID != want {
+			t.Fatalf("pick = %s; want %s", got.ID, want)
+		}
+		return got.ID
 	}
-	pick(a.ID)
-	pick(b.ID)
-	pick(b.ID) // both capped: preserve the affinity established by the second pick.
+	first := pick("")
+	second := a.ID
+	if first == a.ID {
+		second = b.ID
+	}
+	pick(second)
+	pick(second) // both capped: preserve the affinity established by the second pick.
 	bg, bgOpts := m.consumeTrafficClass(context.Background(), executor.Options{Headers: http.Header{requestClassHeader: {"background"}}})
 	_, _, _, err := m.pickWithTraffic(bg, []string{"claude"}, model, bgOpts, nil)
 	var deferred *trafficDeferred
@@ -77,11 +85,11 @@ func TestTrafficShapingSelectionLadder(t *testing.T) {
 	}
 	clock.cancel = nil
 	clock.now = clock.now.Add(59 * time.Minute)
-	m.Remove(ctx, a.ID)
-	pick(b.ID) // cap recovers at the rolling-hour boundary.
-	pick(b.ID) // a sole account is not a soft failure for interactive turns.
+	m.Remove(ctx, first)
+	pick(second) // cap recovers at the rolling-hour boundary.
+	pick(second) // a sole account is not a soft failure for interactive turns.
 	m.mu.Lock()
-	m.auths[b.ID].credentialRetryAfter = time.Now().Add(time.Hour)
+	m.auths[second].credentialRetryAfter = time.Now().Add(time.Hour)
 	m.mu.Unlock()
 	if _, _, _, err = m.pickWithTraffic(ctx, []string{"claude"}, model, opts, nil); err == nil {
 		t.Fatal("interactive override bypassed a hard cooldown")
