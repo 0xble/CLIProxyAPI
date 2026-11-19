@@ -3,6 +3,8 @@ package handlers
 import (
 	"net/http"
 	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 )
 
 // gatewayHeaderPrefixes lists header name prefixes injected by known AI gateway
@@ -44,6 +46,7 @@ var cpaReservedResponseHeaders = map[string]struct{}{
 	"Access-Control-Expose-Headers":    {},
 	"Access-Control-Max-Age":           {},
 	"X-Cpa-Trace-Id":                   {},
+	logging.CPARetryAdviceHeader:       {},
 }
 
 // IsCPAReservedResponseHeader reports whether a downstream response header is managed by CPA.

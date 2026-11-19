@@ -3292,7 +3292,12 @@ func (m *Manager) annotatePoolCooldownTerminalErrorAt(ctx context.Context, provi
 	if !ok {
 		return lastErr
 	}
-	return &poolCooldownTerminalError{cause: lastErr, deadline: deadline}
+	var chainedRetryAt time.Time
+	var trusted *trustedRetryAfterError
+	if errors.As(lastErr, &trusted) && trusted != nil {
+		chainedRetryAt = trusted.chainedRetryAt
+	}
+	return &poolCooldownTerminalError{cause: lastErr, deadline: deadline, chainedRetryAt: chainedRetryAt}
 }
 
 func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, err error) {

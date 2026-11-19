@@ -13,6 +13,9 @@ import (
 // CPATraceIDHeader is the downstream response header used to correlate requests with selected credentials.
 const CPATraceIDHeader = "X-CPA-TRACE-ID"
 
+// CPARetryAdviceHeader identifies a Retry-After produced by a CPA handler.
+const CPARetryAdviceHeader = "X-Cpa-Retry-Advice"
+
 const ginCPATraceStateKey = "__cpa_trace_state__"
 
 // FormatCPATraceID builds a CPA trace ID from the selection time, auth index, and request ID.

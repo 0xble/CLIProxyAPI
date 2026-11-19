@@ -649,11 +649,7 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
 	}
 	var retryAfter string
 	if msg != nil && msg.Error != nil {
-		safeHeaders := coreauth.SafeResponseHeaders(msg.Error)
-		retryAfter = safeHeaders.Get("Retry-After")
-		for _, value := range safeHeaders.Values("Retry-After") {
-			c.Writer.Header().Add("Retry-After", value)
-		}
+		retryAfter = handlers.WriteSafeRetryAfter(c.Writer.Header(), status, msg.Error)
 	}
 	if msg != nil && msg.Addon != nil && handlers.PassthroughHeadersEnabled(h.CurrentConfig()) {
 		for key, values := range msg.Addon {

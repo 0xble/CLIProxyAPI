@@ -1072,7 +1072,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					m.recordAvailabilityNeutralResult(execCtx, result)
 				} else {
 					m.MarkResult(execCtx, result)
-					errExec = annotateTrustedRetryAfterByHint(errExec)
+					errExec = annotateTrustedRetryAfterByHint(execCtx, errExec)
 					syncPreferredUpstreamError(&upstreamErr, errExec)
 				}
 				if okAction {
@@ -1298,7 +1298,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						result.CredentialScope = true
 					}
 					m.MarkResult(execCtx, result)
-					errExec = annotateTrustedRetryAfterByHint(errExec)
+					errExec = annotateTrustedRetryAfterByHint(execCtx, errExec)
 					syncPreferredUpstreamError(&upstreamErr, errExec)
 				}
 				if okAction {
