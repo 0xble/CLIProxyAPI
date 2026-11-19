@@ -261,21 +261,24 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 			// v8 "api-keys" is a provider mapping with safe routing metadata;
 			// recurse into it and let the per-entry credential leaves be removed.
 			v8ProviderGroups := normalizeReadOnlyKey(key.Value) == "api-keys" && value.Kind == yaml.MappingNode
-			// Only string scalars hold credentials. Booleans such as
+			// Booleans and nulls never hold credentials. Flags such as
 			// oauth-include-create-api-key share the "-api-key" suffix, and masking
-			// them would leave an undecodable "***" under a !!bool tag. This
-			// matches redactReadOnlyConfig, which only masks string values.
-			stringScalar := value.Kind == yaml.ScalarNode && value.ShortTag() == "!!str"
-			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (stringScalar && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
-				if stringScalar {
-					value.Value = maskManagementSecret(value.Value)
+			// them would leave an undecodable "***" under a !!bool tag. Every other
+			// scalar is masked, including bare numbers, which the typed config
+			// still reads as string credentials.
+			maskable := isMaskableYAMLScalar(value)
+			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (maskable && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
+				if value.Kind == yaml.ScalarNode {
+					if maskable {
+						maskYAMLScalar(value)
+					}
 					index += 2
 					continue
 				}
 				if value.Kind == yaml.SequenceNode {
 					for _, item := range value.Content {
-						if item.Kind == yaml.ScalarNode {
-							item.Value = maskManagementSecret(item.Value)
+						if isMaskableYAMLScalar(item) {
+							maskYAMLScalar(item)
 						}
 					}
 					index += 2
@@ -300,6 +303,23 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 	for _, child := range node.Content {
 		redactReadOnlyYAMLNode(child)
 	}
+}
+
+// isMaskableYAMLScalar reports whether a scalar node may hold a credential.
+func isMaskableYAMLScalar(node *yaml.Node) bool {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return false
+	}
+	tag := node.ShortTag()
+	return tag != "!!bool" && tag != "!!null"
+}
+
+// maskYAMLScalar masks a credential scalar and retags it as a string, because
+// a mask under a numeric tag cannot be decoded.
+func maskYAMLScalar(node *yaml.Node) {
+	node.Value = maskManagementSecret(node.Value)
+	node.Tag = "!!str"
+	node.Style = 0
 }
 
 // configV8ETag renders a config source hash as a strong ETag.
