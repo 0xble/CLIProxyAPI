@@ -901,7 +901,10 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 			if earliest.IsZero() || next.Before(earliest) {
 				earliest = next
 			}
-			if traffic != nil {
+			// A soft deferral only arises while a subscription credential is
+			// hard-available, and paid keys never take soft-shaped traffic, so a
+			// paid key's recovery must not shorten the deferral's Retry-After.
+			if traffic != nil && !isAPIKeyAuth(candidate) {
 				if trafficRechecks == nil {
 					trafficRechecks = make(map[int]time.Time)
 				}

@@ -111,18 +111,24 @@ func ConsumeTrafficClassHeader(ctx context.Context, headers http.Header) context
 	return context.WithValue(ctx, trafficClassKey{}, background)
 }
 
+func hasTrafficClassHint(headers http.Header) bool {
+	for key := range headers {
+		if strings.EqualFold(key, requestClassHeader) {
+			return true
+		}
+	}
+	return false
+}
+
 // SDK callers may supply the hint in Options. Strip it without mutating their
 // headers, even when shaping is inactive. An inbound handler hint takes precedence.
 func (m *Manager) consumeTrafficClass(ctx context.Context, opts cliproxyexecutor.Options, countOnly bool) (context.Context, cliproxyexecutor.Options) {
 	background, classified := ctx.Value(trafficClassKey{}).(bool)
-	for key := range opts.Headers {
-		if strings.EqualFold(key, requestClassHeader) {
-			opts.Headers = opts.Headers.Clone()
-			classifiedCtx := ConsumeTrafficClassHeader(ctx, opts.Headers)
-			if !classified {
-				background, _ = classifiedCtx.Value(trafficClassKey{}).(bool)
-			}
-			break
+	if hasTrafficClassHint(opts.Headers) {
+		opts.Headers = opts.Headers.Clone()
+		classifiedCtx := ConsumeTrafficClassHeader(ctx, opts.Headers)
+		if !classified {
+			background, _ = classifiedCtx.Value(trafficClassKey{}).(bool)
 		}
 	}
 	request := &trafficRequest{background: background, enabled: !m.HomeEnabled(), countOnly: countOnly}
@@ -388,6 +394,15 @@ func (m *Manager) shapeTraffic(ctx context.Context, options *trafficPick, candid
 	if !hasPolicy {
 		return candidates, nil
 	}
+	// A soft limit is a preference boundary, not permission to move a request
+	// onto a paid API-key credential in the same priority tier. Paid keys stay
+	// out of the soft tier while any subscription credential is hard-available;
+	// hard-unavailable credentials are removed before this function, so the
+	// normal fallback ladder can still reach paid keys on real exhaustion.
+	softTier := tier
+	if subscriptions := withoutAPIKeys(tier); len(subscriptions) > 0 {
+		softTier = subscriptions
+	}
 	session := CanonicalSessionID(options.opts.Headers, options.opts.OriginalRequest, options.opts.Metadata)
 	now := options.now
 	day, dawn, err := trafficDate(now)
@@ -420,7 +435,7 @@ func (m *Manager) shapeTraffic(ctx context.Context, options *trafficPick, candid
 	}
 	var eligible []*Auth
 	var next time.Time
-	for _, a := range tier {
+	for _, a := range softTier {
 		d := decision(a)
 		if len(d.reasons) > 0 {
 			if a.ID == bound {
@@ -440,13 +455,23 @@ func (m *Manager) shapeTraffic(ctx context.Context, options *trafficPick, candid
 			}
 			return nil, &trafficDeferred{until: next, now: now}
 		}
-		log.WithField("candidate_count", len(tier)).Debug("interactive request overriding account traffic preference")
-		eligible = tier
+		log.WithField("candidate_count", len(softTier)).Debug("interactive request overriding account traffic preference")
+		eligible = softTier
 	}
 	if lowerBound != nil {
 		eligible = append(eligible, lowerBound)
 	}
 	return eligible, nil
+}
+
+func withoutAPIKeys(auths []*Auth) []*Auth {
+	out := make([]*Auth, 0, len(auths))
+	for _, a := range auths {
+		if !isAPIKeyAuth(a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 func minDeadline(a, b time.Time) time.Time {

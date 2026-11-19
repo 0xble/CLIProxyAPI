@@ -160,6 +160,23 @@ func TestCodexCreditPark_CreditExhaustedRoutingAndRestart(t *testing.T) {
 	}
 }
 
+func TestCodexCreditPark_ApplyVerifiedBalanceIgnoresRemovedAuth(t *testing.T) {
+	ctx := t.Context()
+	m := NewManager(nil, nil, nil)
+	key := newCreditParkAuth(t.Name(), "10")
+	if _, err := m.Register(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	m.MarkResult(ctx, Result{AuthID: key.ID, Provider: "codex", Model: "a", Error: &Error{HTTPStatus: 429, Code: CodexCreditParkReason}})
+	snapshot, _ := m.GetByID(key.ID)
+	m.mu.Lock()
+	delete(m.auths, key.ID)
+	m.mu.Unlock()
+	if m.ApplyVerifiedCodexCreditBalance(snapshot, 1, time.Now()) {
+		t.Fatal("accepted a verified balance for a removed credential")
+	}
+}
+
 func TestCodexCreditPark_ManualClearSaveFailure(t *testing.T) {
 	ctx := t.Context()
 	store := NewFileCooldownStateStore(t.TempDir())

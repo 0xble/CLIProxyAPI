@@ -181,6 +181,31 @@ func TestTrafficShapingSoftLimitsStayInPriorityTier(t *testing.T) {
 	}
 }
 
+func TestTrafficShapingSoftDeferralSkipsSameTierPaidKey(t *testing.T) {
+	m, clock, pick := newTrafficSelectionTest(t, &FillFirstSelector{})
+	subscription := shapedAuth("subscription", false)
+	subscription.Attributes = map[string]string{"priority": "10"}
+	paid := &Auth{ID: "paid", Provider: "claude", Status: StatusActive, Attributes: map[string]string{"api_key": "test-key", "priority": "10"}}
+	if !isAPIKeyAuth(paid) {
+		t.Fatal("fixture: paid credential must be an API key")
+	}
+	if got, err := pick("", subscription, paid); err != nil || got == nil || got.ID != subscription.ID {
+		t.Fatalf("first pick = %v, %v; want subscription", got, err)
+	}
+	if got, err := pick(""); err != nil || got == nil || got.ID != subscription.ID {
+		t.Fatalf("interactive pick over the soft cap = %v, %v; want subscription override, never the same-tier paid key", got, err)
+	}
+	if got, err := pick("background"); got != nil || !isRequestStopError(err) || SafeResponseHeaders(err).Get("Retry-After") != "3540" || clock.waited != time.Minute {
+		t.Fatalf("background pick over the soft cap = %v, %v, headers %v, waited %v; want deferral, never the same-tier paid key", got, err, SafeResponseHeaders(err), clock.waited)
+	}
+	m.mu.Lock()
+	m.auths[subscription.ID].credentialRetryAfter = clock.now.Add(time.Hour)
+	m.mu.Unlock()
+	if got, err := pick("background"); err != nil || got == nil || got.ID != paid.ID {
+		t.Fatalf("hard cooldown pick = %v, %v; want the paid key once the subscription is hard-unavailable", got, err)
+	}
+}
+
 // The empty class denotes an interactive request with no affinity identity.
 func newTrafficSelectionTest(t *testing.T, selector Selector) (*Manager, *trafficTestClock, func(class string, register ...*Auth) (*Auth, error)) {
 	t.Helper()

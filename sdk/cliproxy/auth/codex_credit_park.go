@@ -195,7 +195,7 @@ func (m *Manager) ApplyVerifiedCodexCreditBalance(snapshot *Auth, balance float6
 	m.mu.Lock()
 	now := time.Now()
 	a := m.auths[snapshot.ID]
-	if a.CodexCreditParkedUntil(now).IsZero() || a.Disabled || a.Status == StatusDisabled ||
+	if a == nil || a.CodexCreditParkedUntil(now).IsZero() || a.Disabled || a.Status == StatusDisabled ||
 		a.RegistrationEpoch != snapshot.RegistrationEpoch || a.CredentialVersion != snapshot.CredentialVersion ||
 		!observedAt.After(a.creditPark.ObservedAt) || observedAt.After(now) {
 		m.mu.Unlock()
