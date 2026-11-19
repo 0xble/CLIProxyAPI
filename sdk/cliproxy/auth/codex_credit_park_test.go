@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/http"
 	"testing"
@@ -141,6 +142,56 @@ func TestCodexCreditPark_CreditExhaustedRoutingAndRestart(t *testing.T) {
 	if latest, _ := m.GetByID(key.ID); !latest.CodexCreditParkedUntil(time.Now()).IsZero() {
 		t.Fatal("cleared park reappeared on restart")
 	}
+
+	// The manual path puts the high-priority key back in routing immediately.
+	// The fake still rejects the key, so new exhaustion must create a new park.
+	execute(m, models[0].ID)
+	previousPark, _ := m.GetByID(key.ID)
+	if cleared, err := m.ClearCodexCreditPark(ctx, previousPark); !cleared || err != nil {
+		t.Fatalf("clear active park: cleared=%v err=%v", cleared, err)
+	}
+	*order = nil
+	execute(m, models[1].ID)
+	if len(*order) != 2 || (*order)[0] != key.ID || (*order)[1] != fallback.ID {
+		t.Fatalf("after manual clear attempts = %v; expected restored key then fallback", *order)
+	}
+	if cleared, err := m.ClearCodexCreditPark(ctx, previousPark); cleared || err == nil {
+		t.Fatalf("old request cleared a new park: cleared=%v err=%v", cleared, err)
+	}
+}
+
+func TestCodexCreditPark_ManualClearSaveFailure(t *testing.T) {
+	ctx := t.Context()
+	store := NewFileCooldownStateStore(t.TempDir())
+	m := NewManager(nil, nil, nil)
+	m.SetCooldownStateStore(store)
+	key := newCreditParkAuth(t.Name(), "10")
+	if _, err := m.Register(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	m.MarkResult(ctx, Result{AuthID: key.ID, Provider: "codex", Model: "a", Error: &Error{HTTPStatus: 429, Code: CodexCreditParkReason}})
+	parked, _ := m.GetByID(key.ID)
+	until := parked.CodexCreditParkedUntil(time.Now())
+	if until.IsZero() {
+		t.Fatal("expected active park")
+	}
+	m.SetCooldownStateStore(failingCreditParkStore{store})
+	if cleared, err := m.ClearCodexCreditPark(ctx, parked); cleared || err == nil {
+		t.Fatalf("reported success despite failed cooldown save: cleared=%v err=%v", cleared, err)
+	}
+	if current, _ := m.GetByID(key.ID); !current.CodexCreditParkedUntil(time.Now()).Equal(until) {
+		t.Fatal("failed save released the live park")
+	}
+	m.SetCooldownStateStore(store)
+	if cleared, err := m.ClearCodexCreditPark(ctx, parked); !cleared || err != nil {
+		t.Fatalf("retry clear after storage recovered: cleared=%v err=%v", cleared, err)
+	}
+}
+
+type failingCreditParkStore struct{ CooldownStateStore }
+
+func (failingCreditParkStore) Save(context.Context, []CooldownStateRecord) error {
+	return errors.New("synthetic cooldown store write failure")
 }
 
 func TestCodexCreditPark_CreditExhaustedRequiresExplicitBillingAndOptIn(t *testing.T) {

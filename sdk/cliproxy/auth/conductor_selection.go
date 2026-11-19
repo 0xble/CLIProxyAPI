@@ -905,7 +905,7 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 	}
 
 	if len(hardAvailable) > 0 {
-		shaped, err := m.shapeTraffic(traffic, hardAvailable, routeModel)
+		shaped, err := m.shapeTraffic(ctx, traffic, hardAvailable, routeModel)
 		if err != nil {
 			if deferred, ok := err.(*trafficDeferred); ok && earliest.After(traffic.now) && earliest.Before(deferred.until) {
 				deferred.until = earliest
@@ -2397,7 +2397,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	)
 	if len(candidates) > 0 {
 		available, selectorAuths, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, provider, model, now, schedulerAcross, opts.Headers)
-		if errAvailable != nil && (!canInspectUnavailableAffinity || isRequestStopError(errAvailable)) {
+		if errAvailable != nil && !canInspectUnavailableAffinity {
 			m.mu.RUnlock()
 			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
 			return nil, nil, errAvailable
@@ -2895,7 +2895,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	)
 	if len(candidates) > 0 {
 		available, selectorAuths, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, now, schedulerAcross, opts.Headers)
-		if errAvailable != nil && !canInspectUnavailableAffinity {
+		if errAvailable != nil && (!canInspectUnavailableAffinity || isRequestStopError(errAvailable)) {
 			m.mu.RUnlock()
 			m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
 			return nil, nil, "", errAvailable

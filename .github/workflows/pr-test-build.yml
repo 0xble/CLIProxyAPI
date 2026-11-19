@@ -21,7 +21,7 @@ jobs:
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Routing policy regression tests
         run: >-
-          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./internal/api/handlers/management
+          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./sdk/api/handlers/claude ./internal/api ./internal/api/handlers/management
           ./internal/config ./internal/runtime/executor/helps
           -run 'TrafficShaping|QuotaReserve|CreditExhausted|CreditPark|CreditResetDay|CodexOverload|LegacyCodexModel|ClaudeQuota|ChainedCPAPoolCooldown|Issue7017TrustedRetryAfter'
           -count=1 -v

@@ -84,13 +84,14 @@ func trafficPolicyFor(a *Auth) (trafficPolicy, bool) {
 type trafficRequestKey struct{}
 type trafficRequest struct {
 	background bool
+	countOnly  bool
 	waited     time.Duration
 	enabled    bool
 }
 
 // Remove the hop-local hint even if no credential opts in. Treat duplicate and
 // invalid hints as interactive. Do not mutate caller-owned headers.
-func (m *Manager) consumeTrafficClass(ctx context.Context, opts cliproxyexecutor.Options) (context.Context, cliproxyexecutor.Options) {
+func (m *Manager) consumeTrafficClass(ctx context.Context, opts cliproxyexecutor.Options, countOnly bool) (context.Context, cliproxyexecutor.Options) {
 	var values []string
 	cloned := false
 	for key, headers := range opts.Headers {
@@ -104,7 +105,7 @@ func (m *Manager) consumeTrafficClass(ctx context.Context, opts cliproxyexecutor
 		values = append(values, headers...)
 		delete(opts.Headers, key)
 	}
-	request := &trafficRequest{background: len(values) == 1 && strings.EqualFold(strings.TrimSpace(values[0]), "background"), enabled: !m.HomeEnabled()}
+	request := &trafficRequest{background: len(values) == 1 && strings.EqualFold(strings.TrimSpace(values[0]), "background"), enabled: !m.HomeEnabled(), countOnly: countOnly}
 	return context.WithValue(ctx, trafficRequestKey{}, request), opts
 }
 
@@ -151,9 +152,10 @@ func trafficDate(now time.Time) (day int, dawn time.Time, err error) {
 var trafficZone, trafficZoneErr = time.LoadLocation("America/Los_Angeles")
 
 // Called under m.mu (registered auth snapshot) and trafficMu (runtime state).
-func (m *Manager) trafficNight(day int, now time.Time) (night, rest string) {
+func (m *Manager) trafficNight(ctx context.Context, day int, now, dawn time.Time) (night, rest string) {
 	state := &m.traffic
-	if state.day == day {
+	blocked, _, _ := authAvailabilityForRequest(ctx, m.auths[state.night], "", now)
+	if state.day == day && (!blocked || !now.Before(dawn)) {
 		return state.night, state.daytimeSleep
 	}
 	var ids []string
@@ -161,7 +163,10 @@ func (m *Manager) trafficNight(day int, now time.Time) (night, rest string) {
 	var reset time.Time
 	for id, a := range m.auths {
 		p, ok := trafficPolicyFor(a)
-		if !ok || !p.night || a.Disabled || a.Status == StatusDisabled {
+		if !ok || !p.night {
+			continue
+		}
+		if blocked, _, _ := authAvailabilityForRequest(ctx, a, "", now); blocked {
 			continue
 		}
 		ids = append(ids, id)
@@ -211,6 +216,10 @@ func (d *trafficDecision) delay(reason string, until time.Time) {
 
 func (m *Manager) trafficDecision(a *Auth, p trafficPolicy, session string, pinned, background bool, now time.Time, day int, dawn time.Time, night, rest string) trafficDecision {
 	var d trafficDecision
+	// A soft limit must not turn an interactive binding into a failover.
+	if pinned && !background {
+		return d
+	}
 	if usage := m.traffic.accounts[a.ID]; usage != nil {
 		if p.requests > 0 {
 			first := sort.Search(len(usage.starts), func(i int) bool { return usage.starts[i].Add(time.Hour).After(now) })
@@ -291,12 +300,9 @@ func (m *Manager) trafficDecision(a *Auth, p trafficPolicy, session string, pinn
 			d.delay("day_sleep", dawn.Add(6*time.Hour))
 		}
 	}
-	if p.night && background && !pinned && !dawn.IsZero() && a.ID != night {
+	if p.night && background && !pinned && !near && !dawn.IsZero() && a.ID != night {
 		release := dawn.Add(trafficJitter(a.ID, day))
-		if !now.Before(dawn) && now.Before(release) {
-			d.delay("dawn_pacing", release)
-		}
-		if now.Before(dawn) && !near {
+		if now.Before(release) {
 			d.delay("dawn_pacing", release)
 		}
 	}
@@ -327,7 +333,7 @@ type trafficPick struct {
 }
 
 // Called after hard availability and before priority tiers are built.
-func (m *Manager) shapeTraffic(options *trafficPick, candidates []*Auth, model string) ([]*Auth, error) {
+func (m *Manager) shapeTraffic(ctx context.Context, options *trafficPick, candidates []*Auth, model string) ([]*Auth, error) {
 	hasPolicy := false
 	for _, a := range candidates {
 		if _, ok := trafficPolicyFor(a); ok {
@@ -356,7 +362,7 @@ func (m *Manager) shapeTraffic(options *trafficPick, candidates []*Auth, model s
 	defer m.trafficMu.Unlock()
 	var night, rest string
 	if err == nil {
-		night, rest = m.trafficNight(day, now)
+		night, rest = m.trafficNight(ctx, day, now, dawn)
 	}
 	var eligible []*Auth
 	var next time.Time
@@ -378,11 +384,6 @@ func (m *Manager) shapeTraffic(options *trafficPick, candidates []*Auth, model s
 	}
 	if !background {
 		log.WithField("candidate_count", len(candidates)).Debug("interactive request overriding account traffic preference")
-		for _, a := range candidates {
-			if a.ID == bound {
-				return []*Auth{a}, nil
-			}
-		}
 		return candidates, nil
 	}
 	return nil, &trafficDeferred{until: next, now: now}
@@ -503,7 +504,7 @@ func (m *Manager) pickWithTraffic(ctx context.Context, providers []string, model
 		m.trafficPickMu.Lock()
 		pickCtx := context.WithValue(ctx, trafficPickKey{}, &trafficPick{opts: opts, request: request, now: clock.Now()})
 		selected, executor, provider, err := m.pickNextMixedLegacy(pickCtx, providers, model, opts, tried)
-		if err == nil {
+		if err == nil && !request.countOnly {
 			m.recordTrafficPick(selected, opts, clock.Now())
 		}
 		m.trafficPickMu.Unlock()

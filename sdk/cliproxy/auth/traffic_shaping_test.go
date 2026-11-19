@@ -35,8 +35,14 @@ func (c *trafficTestClock) Wait(ctx context.Context, d time.Duration) error {
 }
 
 func TestTrafficShapingSelectionLadder(t *testing.T) {
+	for _, rebind := range []string{"always", "never"} {
+		t.Run(rebind, func(t *testing.T) { testTrafficShapingSelectionLadder(t, rebind) })
+	}
+}
+
+func testTrafficShapingSelectionLadder(t *testing.T, rebind string) {
 	ctx := context.Background()
-	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &FillFirstSelector{}, TTL: time.Hour})
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &FillFirstSelector{}, TTL: time.Hour, RebindOn: rebind})
 	defer selector.Stop()
 	m := NewManager(nil, selector, nil)
 	m.RegisterExecutor(schedulerProviderTestExecutor{provider: "claude"})
@@ -51,7 +57,7 @@ func TestTrafficShapingSelectionLadder(t *testing.T) {
 	}
 	registerSchedulerModels(t, "claude", model, a.ID, b.ID)
 	opts := executor.Options{Headers: http.Header{"X-Session-Id": {"sticky"}}}
-	ctx, opts = m.consumeTrafficClass(ctx, opts)
+	ctx, opts = m.consumeTrafficClass(ctx, opts, false)
 	pick := func(want string) string {
 		t.Helper()
 		got, _, _, err := m.pickWithTraffic(ctx, []string{"claude"}, model, opts, nil)
@@ -68,9 +74,15 @@ func TestTrafficShapingSelectionLadder(t *testing.T) {
 	if first == a.ID {
 		second = b.ID
 	}
-	pick(second)
-	pick(second) // both capped: preserve the affinity established by the second pick.
-	bg, bgOpts := m.consumeTrafficClass(context.Background(), executor.Options{Headers: http.Header{requestClassHeader: {"background"}}})
+	m.mu.Lock()
+	m.auths[first].Quota.ObserveResponseHeadersForProvider("claude", claudeWeeklyHeaders("0.90", clock.now.Add(48*time.Hour)), clock.now)
+	m.mu.Unlock()
+	pick(first) // An existing binding survives both the hourly cap and weekly reserve.
+	newCtx, newOpts := m.consumeTrafficClass(context.Background(), executor.Options{Headers: http.Header{"X-Session-Id": {"new"}}}, false)
+	if got, _, _, err := m.pickWithTraffic(newCtx, []string{"claude"}, model, newOpts, nil); err != nil || got.ID != second {
+		t.Fatalf("new binding must prefer the account within its limits: got %v, err %v", got, err)
+	}
+	bg, bgOpts := m.consumeTrafficClass(context.Background(), executor.Options{Headers: http.Header{requestClassHeader: {"background"}}}, false)
 	_, _, _, err := m.pickWithTraffic(bg, []string{"claude"}, model, bgOpts, nil)
 	var deferred *trafficDeferred
 	if !errors.As(err, &deferred) || clock.waited != time.Minute || SafeResponseHeaders(err).Get("Retry-After") != "3540" {
@@ -79,17 +91,16 @@ func TestTrafficShapingSelectionLadder(t *testing.T) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	clock.cancel = cancel
-	cancelCtx, bgOpts = m.consumeTrafficClass(cancelCtx, executor.Options{Headers: http.Header{requestClassHeader: {"background"}}})
+	cancelCtx, bgOpts = m.consumeTrafficClass(cancelCtx, executor.Options{Headers: http.Header{requestClassHeader: {"background"}}}, false)
 	if _, _, _, err = m.pickWithTraffic(cancelCtx, []string{"claude"}, model, bgOpts, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait ignored cancellation: %v", err)
 	}
 	clock.cancel = nil
 	clock.now = clock.now.Add(59 * time.Minute)
-	m.Remove(ctx, first)
-	pick(second) // cap recovers at the rolling-hour boundary.
-	pick(second) // a sole account is not a soft failure for interactive turns.
+	m.Remove(ctx, second)
+	pick(first) // A sole account in reserve is not a soft failure for interactive turns.
 	m.mu.Lock()
-	m.auths[second].credentialRetryAfter = time.Now().Add(time.Hour)
+	m.auths[first].credentialRetryAfter = time.Now().Add(time.Hour)
 	m.mu.Unlock()
 	if _, _, _, err = m.pickWithTraffic(ctx, []string{"claude"}, model, opts, nil); err == nil {
 		t.Fatal("interactive override bypassed a hard cooldown")
@@ -105,7 +116,7 @@ func TestTrafficShapingSchedule(t *testing.T) {
 		if err != nil || dawn.In(trafficZone).Hour() != 7 {
 			t.Fatalf("bad DST boundary: %v %v", dawn, err)
 		}
-		night, rest := m.trafficNight(id, day)
+		night, rest := m.trafficNight(context.Background(), id, day, dawn)
 		sleeper, working := a, b
 		if night == a.ID {
 			sleeper, working = b, a
@@ -131,12 +142,14 @@ func TestTrafficShapingSchedule(t *testing.T) {
 			t.Fatalf("dawn pacing did not lift: %+v", d)
 		}
 		sleeper.Quota.ObserveResponseHeadersForProvider("claude", claudeWeeklyHeaders("0.5", day.Add(12*time.Hour)), day)
-		if d := m.trafficDecision(sleeper, p, "new", false, true, day, id, dawn, night, rest); !d.until.IsZero() {
-			t.Fatalf("near reset incorrectly slept: %+v", d)
+		for _, at := range []time.Time{day, dawn} {
+			if d := m.trafficDecision(sleeper, p, "new", false, true, at, id, dawn, night, rest); !d.until.IsZero() {
+				t.Fatalf("near reset incorrectly slept at %v: %+v", at, d)
+			}
 		}
 		nextDay := day.AddDate(0, 0, 1)
-		id, _, _ = trafficDate(nextDay)
-		if next, _ := m.trafficNight(id, nextDay); next == night {
+		id, dawn, _ = trafficDate(nextDay)
+		if next, _ := m.trafficNight(context.Background(), id, nextDay, dawn); next == night {
 			t.Fatal("night account did not rotate")
 		}
 	}
@@ -181,12 +194,12 @@ func TestTrafficShapingReserveAndHysteresis(t *testing.T) {
 func TestTrafficShapingHeaderAndPolicyValidation(t *testing.T) {
 	m := NewManager(nil, &FillFirstSelector{}, nil)
 	headers := http.Header{"x-hermes-request-class": {" background "}, "X-Keep": {"ok"}}
-	ctx, opts := m.consumeTrafficClass(context.Background(), executor.Options{Headers: headers})
+	ctx, opts := m.consumeTrafficClass(context.Background(), executor.Options{Headers: headers}, false)
 	if len(opts.Headers) != 1 || opts.Headers.Get("X-Keep") != "ok" || len(headers) != 2 || !ctx.Value(trafficRequestKey{}).(*trafficRequest).background {
 		t.Fatalf("incorrect header consumption: %v", opts.Headers)
 	}
 	headers[requestClassHeader] = []string{"interactive"}
-	ctx, opts = m.consumeTrafficClass(context.Background(), executor.Options{Headers: headers})
+	ctx, opts = m.consumeTrafficClass(context.Background(), executor.Options{Headers: headers}, false)
 	if ctx.Value(trafficRequestKey{}).(*trafficRequest).background || len(opts.Headers) != 1 {
 		t.Fatal("duplicate private header was not stripped or failed closed")
 	}
@@ -222,18 +235,64 @@ func TestTrafficShapingAllAsleepAndNightAtCap(t *testing.T) {
 	duty.Quota.ObserveResponseHeadersForProvider("claude", claudeWeeklyHeaders("0.2", now.Add(25*time.Hour)), now)
 	m.trafficAccountFor(duty.ID).starts = []time.Time{now}
 	opts := executor.Options{Headers: http.Header{"X-Session-Id": {"new"}}}
+	ctx, _ := m.consumeTrafficClass(context.Background(), opts, false)
 	for _, candidates := range [][]*Auth{{sleeper}, {duty, sleeper}} {
 		p := &trafficPick{opts: opts, now: now, request: &trafficRequest{background: true}}
-		_, err := m.shapeTraffic(p, candidates, "test-model")
+		_, err := m.shapeTraffic(ctx, p, candidates, "test-model")
 		var deferred *trafficDeferred
 		if !errors.As(err, &deferred) {
 			t.Fatalf("asleep or capped background candidates must be deferred: %v", err)
 		}
 		p.request.background = false
-		got, err := m.shapeTraffic(p, candidates, "test-model")
+		got, err := m.shapeTraffic(ctx, p, candidates, "test-model")
 		if err != nil || len(got) != len(candidates) {
 			t.Fatalf("interactive request must be able to wake a hard-eligible sleeper: %v", err)
 		}
+	}
+}
+
+func TestTrafficShapingNightSkipsHardBlockedDuty(t *testing.T) {
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	now := time.Date(2026, 11, 18, 1, 0, 0, 0, trafficZone)
+	first, second := shapedAuth("first", true), shapedAuth("second", true)
+	m.auths[first.ID], m.auths[second.ID] = first, second
+	first.Quota.ObserveResponseHeadersForProvider("claude", claudeWeeklyHeaders("0.2", now.Add(25*time.Hour)), now)
+	first.credentialRetryAfter = now.Add(time.Hour)
+	ctx, _ := m.consumeTrafficClass(context.Background(), executor.Options{}, false)
+	day, dawn, _ := trafficDate(now)
+	if duty, _ := m.trafficNight(ctx, day, now, dawn); duty != second.ID {
+		t.Fatalf("duty = %q, want %q", duty, second.ID)
+	}
+	first.credentialRetryAfter = time.Time{}
+	second.credentialRetryAfter = now.Add(time.Hour)
+	if duty, _ := m.trafficNight(ctx, day, now, dawn); duty != first.ID {
+		t.Fatalf("replacement duty = %q, want %q", duty, first.ID)
+	}
+}
+
+func TestTrafficShapingCountDoesNotChargeBudget(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	m.RegisterExecutor(schedulerProviderTestExecutor{provider: "claude"})
+	a := shapedAuth("count-account", false)
+	if _, err := m.Register(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	clock := &trafficTestClock{now: time.Now()}
+	m.SetContinuityClockForTest(clock)
+	const model = "traffic-shaping-count-test-model"
+	registerSchedulerModels(t, "claude", model, a.ID)
+	req := executor.Request{Model: model}
+	if _, err := m.ExecuteCount(ctx, []string{"claude"}, req, executor.Options{Headers: http.Header{"X-Session-Id": {"count-session"}}}); err != nil {
+		t.Fatal(err)
+	}
+	opts := executor.Options{Headers: http.Header{requestClassHeader: {"background"}, "X-Session-Id": {"generation-session"}}}
+	if _, err := m.Execute(ctx, []string{"claude"}, req, opts); err != nil || clock.waited != 0 {
+		t.Fatalf("count consumed generation budget: waited %s, err %v", clock.waited, err)
+	}
+	usage := m.traffic.accounts[a.ID]
+	if len(usage.starts) != 1 || len(usage.sessions) != 1 || usage.sessions["count-session"].After(time.Time{}) {
+		t.Fatalf("traffic accounting includes count_tokens: %+v", usage)
 	}
 }
 

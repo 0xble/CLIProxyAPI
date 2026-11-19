@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"context"
+	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -93,6 +95,90 @@ func codexAPIKeyExhausted(err *Error) bool {
 		}
 	}
 	return false
+}
+
+// ClearCodexCreditPark explicitly releases a local credit park without claiming a
+// verified balance. Pass the snapshot selected by the operator; a replacement
+// credential or a newer park must not be affected by a stale request.
+func (m *Manager) ClearCodexCreditPark(ctx context.Context, snapshot *Auth) (bool, error) {
+	if m == nil || snapshot == nil {
+		return false, &Error{HTTPStatus: http.StatusNotFound, Message: "auth not found"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Serialize with cooldown saves and store/config transitions until both the
+	// durable snapshot and the live credential reflect the clear.
+	m.configCooldownMu.Lock()
+	defer m.configCooldownMu.Unlock()
+	if m.HomeEnabled() {
+		return false, &Error{HTTPStatus: http.StatusNotFound, Message: "local credential management is unavailable"}
+	}
+	releaseMutation, errLock := m.lockAuthMutationContext(ctx, snapshot.ID)
+	if errLock != nil {
+		return false, errLock
+	}
+	defer releaseMutation()
+
+	m.mu.RLock()
+	a := m.auths[snapshot.ID]
+	store := m.cooldownStore
+	var errTarget *Error
+	var active bool
+	switch {
+	case a == nil:
+		errTarget = &Error{HTTPStatus: http.StatusNotFound, Message: "auth not found"}
+	case a.RegistrationEpoch != snapshot.RegistrationEpoch || a.CredentialVersion != snapshot.CredentialVersion:
+		errTarget = &Error{HTTPStatus: http.StatusConflict, Message: "credential changed; list credentials and retry"}
+	case a.Disabled || a.Status == StatusDisabled || a.CodexCreditResetDay() == 0:
+		errTarget = &Error{HTTPStatus: http.StatusConflict, Message: "credit park clearing requires an enabled, opted-in Codex API key"}
+	default:
+		active = !a.CodexCreditParkedUntil(time.Now()).IsZero()
+		if active && !equalCreditPark(&a.creditPark, &snapshot.creditPark) {
+			errTarget = &Error{HTTPStatus: http.StatusConflict, Message: "credit park changed; list credentials and retry"}
+		}
+	}
+	m.mu.RUnlock()
+	if errTarget != nil {
+		return false, errTarget
+	}
+	if !active {
+		return false, nil
+	}
+
+	if store != nil {
+		records := m.cooldownStateRecordsSnapshot()
+		kept := records[:0]
+		for _, record := range records {
+			if record.AuthID == snapshot.ID && record.CreditPark != nil {
+				record.CreditPark = nil
+				if record.NextRetryAfter.IsZero() {
+					continue // Park-only record; ordinary cooldown records survive.
+				}
+			}
+			kept = append(kept, record)
+		}
+		if errCtx := ctx.Err(); errCtx != nil {
+			return false, errCtx
+		}
+		// Once the write starts, a disconnect must not interrupt persistence.
+		if errSave := store.Save(context.WithoutCancel(ctx), kept); errSave != nil {
+			return false, fmt.Errorf("persist Codex credit park clear: %w", errSave)
+		}
+	}
+
+	m.mu.Lock()
+	now := time.Now()
+	// Fence older cooldown records already read by a concurrent restore.
+	a.creditPark = creditParkState{ObservedAt: now.UTC()}
+	a.Generation++
+	a.UpdatedAt = now
+	released := a.Clone()
+	m.mu.Unlock()
+	m.scheduler.upsertAuthResult(released, nil, true)
+	m.projectAuthModels(released, now)
+	log.WithField("auth_id", released.ID).Info("Codex API key unparked manually by operator")
+	return true, nil
 }
 
 // ApplyVerifiedCodexCreditBalance releases an active park after a trusted balance
