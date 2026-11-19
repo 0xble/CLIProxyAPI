@@ -213,3 +213,54 @@ func TestTrafficShapingSessionCapDoesNotBlockExistingBinding(t *testing.T) {
 		t.Fatalf("existing session should continue: %+v", d)
 	}
 }
+
+func TestTrafficShapingAllAsleepAndNightAtCap(t *testing.T) {
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	now := time.Date(2026, 11, 18, 1, 0, 0, 0, trafficZone)
+	duty, sleeper := shapedAuth("duty", true), shapedAuth("sleeper", true)
+	m.auths[duty.ID], m.auths[sleeper.ID] = duty, sleeper
+	duty.Quota.ObserveResponseHeadersForProvider("claude", claudeWeeklyHeaders("0.2", now.Add(25*time.Hour)), now)
+	m.trafficAccountFor(duty.ID).starts = []time.Time{now}
+	opts := executor.Options{Headers: http.Header{"X-Session-Id": {"new"}}}
+	for _, candidates := range [][]*Auth{{sleeper}, {duty, sleeper}} {
+		p := &trafficPick{opts: opts, now: now, request: &trafficRequest{background: true}}
+		_, err := m.shapeTraffic(p, candidates, "test-model")
+		var deferred *trafficDeferred
+		if !errors.As(err, &deferred) {
+			t.Fatalf("asleep or capped background candidates must be deferred: %v", err)
+		}
+		p.request.background = false
+		got, err := m.shapeTraffic(p, candidates, "test-model")
+		if err != nil || len(got) != len(candidates) {
+			t.Fatalf("interactive request must be able to wake a hard-eligible sleeper: %v", err)
+		}
+	}
+}
+
+type trafficCaptureExecutor struct {
+	schedulerProviderTestExecutor
+	headers http.Header
+}
+
+func (e *trafficCaptureExecutor) Execute(_ context.Context, _ *Auth, _ executor.Request, opts executor.Options) (executor.Response, error) {
+	e.headers = opts.Headers.Clone()
+	return executor.Response{}, nil
+}
+
+func TestTrafficShapingExecutionDoesNotForwardClass(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	e := &trafficCaptureExecutor{schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "claude"}}
+	m.RegisterExecutor(e)
+	a := shapedAuth("header-account", false)
+	if _, err := m.Register(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	const model = "traffic-shaping-header-test-model"
+	registerSchedulerModels(t, "claude", model, a.ID)
+	opts := executor.Options{Headers: http.Header{requestClassHeader: {"background"}, "X-Keep": {"value"}}}
+	_, err := m.Execute(ctx, []string{"claude"}, executor.Request{Model: model}, opts)
+	if err != nil || e.headers.Get(requestClassHeader) != "" || e.headers.Get("X-Keep") != "value" || opts.Headers.Get(requestClassHeader) != "background" {
+		t.Fatalf("header containment failed: %v", err)
+	}
+}
