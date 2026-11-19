@@ -115,6 +115,40 @@ func sanitizePersistedClaudeCooldownSignals(raw map[string]string) map[string]st
 	return rejectedClaudeSignalsForCooldown("claude", headers)
 }
 
+func hasClaudeWeeklyCooldownEvidence(signals map[string]string) bool {
+	if len(signals) == 0 {
+		return false
+	}
+	status := func(suffix string) string {
+		for key, value := range signals {
+			if strings.EqualFold(strings.TrimSpace(key), "anthropic-ratelimit-unified-"+suffix) {
+				return strings.ToLower(strings.TrimSpace(value))
+			}
+		}
+		return ""
+	}
+	unifiedStatus := status("status")
+	status7d := status("7d-status")
+	status7dOI := status("7d_oi-status")
+	claim := status("representative-claim")
+	for key, value := range signals {
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		if strings.HasPrefix(lowerKey, "anthropic-ratelimit-unified-7d") && strings.HasSuffix(lowerKey, "-status") && strings.EqualFold(strings.TrimSpace(value), "rejected") {
+			return true
+		}
+	}
+	switch claim {
+	case "seven_day":
+		return status7d == "rejected" || (status7d == "" && unifiedStatus == "rejected")
+	case "seven_day_overage_included":
+		return status7dOI == "rejected" || (status7dOI == "" && unifiedStatus == "rejected")
+	case "":
+		return status7d == "rejected" || status7dOI == "rejected"
+	default:
+		return false
+	}
+}
+
 // collectQuotaSignals builds the bounded snapshot for a single response.
 func collectQuotaSignals(provider string, headers http.Header) map[string]string {
 	if len(headers) == 0 {

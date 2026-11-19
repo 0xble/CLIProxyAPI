@@ -316,7 +316,47 @@ func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
 	return len(snapshots) > 0
 }
 
-// RestoreCooldownStates restores unexpired persisted cooldown records into registered auths.
+// capPersistedClaudeQuotaCooldown bounds legacy Claude quota records that
+// contain no weekly-window evidence. Deploying newer recovery logic must not
+// inherit a multi-day deadline written by older parsing code.
+func capPersistedClaudeQuotaCooldown(record CooldownStateRecord, now time.Time) CooldownStateRecord {
+	if !strings.EqualFold(strings.TrimSpace(record.Provider), "claude") || !isPersistedClaudeQuotaCooldown(record) {
+		return record
+	}
+	if hasClaudeWeeklyCooldownEvidence(record.CooldownSignals) || hasClaudeWeeklyCooldownEvidence(record.IndependentCooldownSignals) {
+		return record
+	}
+	capAt := now.Add(15 * time.Minute)
+	capDeadline := func(deadline *time.Time) {
+		if deadline.After(capAt) {
+			*deadline = capAt
+		}
+	}
+	capDeadline(&record.NextRetryAfter)
+	capDeadline(&record.Quota.NextRecoverAt)
+	capDeadline(&record.ForceCooldownUntil)
+	capDeadline(&record.CredQuotaForceCooldownUntil)
+	capDeadline(&record.QuotaForceCooldownUntil)
+	capDeadline(&record.IndependentForceCooldownUntil)
+	capDeadline(&record.IndependentQuotaForceCooldownUntil)
+	if record.IndependentState != nil {
+		record.IndependentState = record.IndependentState.cloneShallow()
+		capDeadline(&record.IndependentState.NextRetryAfter)
+		capDeadline(&record.IndependentState.Quota.NextRecoverAt)
+	}
+	return record
+}
+
+func isPersistedClaudeQuotaCooldown(record CooldownStateRecord) bool {
+	if record.Quota.Exceeded && record.Quota.Reason == "credential_quota" {
+		return true
+	}
+	if strings.Contains(strings.ToLower(record.Reason), "quota") || strings.Contains(strings.ToLower(record.Reason), "rate") || strings.EqualFold(strings.TrimSpace(record.Reason), "unavailable") {
+		return true
+	}
+	return record.CredentialQuotaPropagated || record.IndependentState != nil && record.IndependentState.Quota.Exceeded
+}
+
 func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 	if m == nil {
 		return nil
@@ -344,6 +384,7 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 
 	m.mu.Lock()
 	for _, record := range records {
+		record = capPersistedClaudeQuotaCooldown(record, now)
 		if strings.TrimSpace(record.Model) == "" {
 			authLevelRecords = append(authLevelRecords, record)
 			continue

@@ -192,6 +192,31 @@ func TestFileCooldownStateStore_SaveLoadAndCleanStale(t *testing.T) {
 	}
 }
 
+func TestCapPersistedClaudeQuotaCooldown(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	long := now.Add(100 * time.Hour)
+	record := CooldownStateRecord{
+		Provider:           "claude",
+		Quota:              QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: long},
+		NextRetryAfter:     long,
+		ForceCooldownUntil: long,
+	}
+	capped := capPersistedClaudeQuotaCooldown(record, now)
+	want := now.Add(15 * time.Minute)
+	if !capped.Quota.NextRecoverAt.Equal(want) || !capped.NextRetryAfter.Equal(want) || !capped.ForceCooldownUntil.Equal(want) {
+		t.Fatalf("capped record = %+v, want deadlines at %s", capped, want)
+	}
+
+	record.CooldownSignals = map[string]string{
+		"Anthropic-Ratelimit-Unified-Representative-Claim": "seven_day_opus",
+		"Anthropic-Ratelimit-Unified-7d_opus-Status":       "rejected",
+	}
+	preserved := capPersistedClaudeQuotaCooldown(record, now)
+	if !preserved.Quota.NextRecoverAt.Equal(long) {
+		t.Fatalf("model-family weekly-evidence record deadline = %s, want %s", preserved.Quota.NextRecoverAt, long)
+	}
+}
+
 func TestFileCooldownStateStore_ConcurrentSave(t *testing.T) {
 	authDir := t.TempDir()
 	store := NewFileCooldownStateStoreWithAuthDir(authDir, authDir)

@@ -197,6 +197,14 @@ func EvaluateQuotaReserve(policy QuotaReservePolicy, reading WeeklyQuotaReading,
 	return decision
 }
 
+// quotaReserveLatch remembers an exclusion floor for one weekly reset. The
+// guard releases the credential only after the reading clears the floor with
+// hysteresis, or when the provider reports a new reset window.
+type quotaReserveLatch struct {
+	floor float64
+	reset time.Time
+}
+
 // quotaReserveDecisionForAuth evaluates an opted-in credential. Missing or
 // unparseable quota data leaves the credential eligible: the guard never
 // fabricates a reading, and the first response will supply one.
@@ -212,14 +220,84 @@ func quotaReserveDecisionForAuth(auth *Auth, now time.Time) (QuotaReserveDecisio
 	if !okReading {
 		return QuotaReserveDecision{Reason: "weekly_quota_unknown"}, true
 	}
-	return EvaluateQuotaReserve(policy, reading, now), true
+	decision := EvaluateQuotaReserve(policy, reading, now)
+	decision = applyQuotaReserveHysteresis(auth, policy, reading, now, decision)
+	updateQuotaReserveLatch(auth, policy, reading, decision, now)
+	return decision, true
+}
+
+func applyQuotaReserveHysteresis(auth *Auth, policy QuotaReservePolicy, reading WeeklyQuotaReading, now time.Time, decision QuotaReserveDecision) QuotaReserveDecision {
+	latch := auth.quotaReserveLatch
+	if latch.floor == 0 || !quotaReserveResetMatches(latch.reset, reading.ResetAt) {
+		return decision
+	}
+	// A stale weekly reading is eligible after its reset. Do not let the old
+	// window's latch block routing until a response reports the new window.
+	if decision.Reason == "weekly_window_reset" || !reading.ResetAt.After(now) {
+		return decision
+	}
+	// The final-reserve policy supersedes the ordinary reserve once its window
+	// begins. A latch from the ordinary floor must not cancel that allowance.
+	if decision.Reason == "within_reset_window" && latch.floor == policy.ReservePercent {
+		return decision
+	}
+	if !decision.Excluded && reading.UsedPercent > 100-math.Min(100, latch.floor+2) {
+		decision.Excluded = true
+		decision.Reason = quotaReserveReasonForFloor(policy, latch.floor, now, reading.ResetAt)
+		decision.RecheckAt = reading.ResetAt
+		if latch.floor == policy.ReservePercent {
+			decision.RecheckAt = reading.ResetAt.Add(-policy.ResetWindow)
+		}
+	}
+	return decision
+}
+
+func quotaReserveResetMatches(a, b time.Time) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	return a.Equal(b)
+}
+
+func updateQuotaReserveLatch(auth *Auth, policy QuotaReservePolicy, reading WeeklyQuotaReading, decision QuotaReserveDecision, now time.Time) {
+	if auth == nil {
+		return
+	}
+	if !reading.ResetAt.After(now) {
+		auth.quotaReserveLatch = quotaReserveLatch{}
+		return
+	}
+	if decision.Excluded {
+		auth.quotaReserveLatch = quotaReserveLatch{floor: quotaReserveFloor(policy, decision), reset: reading.ResetAt}
+		return
+	}
+	if !decision.Excluded {
+		auth.quotaReserveLatch = quotaReserveLatch{}
+	}
+}
+
+func quotaReserveFloor(policy QuotaReservePolicy, decision QuotaReserveDecision) float64 {
+	if decision.Reason == "below_final_reserve" {
+		return policy.FinalReservePercent
+	}
+	return policy.ReservePercent
+}
+
+func quotaReserveReasonForFloor(policy QuotaReservePolicy, floor float64, now time.Time, resetAt time.Time) string {
+	if floor == policy.FinalReservePercent && !now.Before(resetAt.Add(-policy.ResetWindow)) {
+		return "below_final_reserve"
+	}
+	return "below_reserve"
 }
 
 // logQuotaReserveTransition records when a fresh observation moves an opted-in
 // credential into or out of the guard, so skips are visible without per-request noise.
 func logQuotaReserveTransition(auth *Auth, wasExcluded bool, now time.Time) {
 	decision, ok := quotaReserveDecisionForAuth(auth, now)
-	if !ok || decision.Excluded == wasExcluded {
+	if !ok {
+		return
+	}
+	if decision.Excluded == wasExcluded {
 		return
 	}
 	fields := log.Fields{
