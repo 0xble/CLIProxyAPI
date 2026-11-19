@@ -282,6 +282,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	var selectionCooldownDeadline time.Time
 	var terminalRoundRejectedByScheduler bool
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	m.warnLegacyCodexAPIKeyRoute(ctx, normalized, retryModel)
 	continuitySession := ensureContinuitySession(ctx, &opts)
 	if continuitySession.terminated {
 		termErr := continuitySession.terminalErr
@@ -441,6 +442,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	var preferredUpstreamErr error
 	var selectionCooldownDeadline time.Time
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	m.warnLegacyCodexAPIKeyRoute(ctx, normalized, retryModel)
 	for attempt := 0; ; attempt++ {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
@@ -522,6 +524,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	var terminalRoundRejectedByScheduler bool
 	homeRetryLimit := -1
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	m.warnLegacyCodexAPIKeyRoute(ctx, normalized, retryModel)
 	continuitySession := ensureContinuitySession(ctx, &opts)
 	if continuitySession.terminated {
 		termErr := continuitySession.terminalErr

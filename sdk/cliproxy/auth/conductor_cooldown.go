@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
 	"github.com/MoeForge/moego/regexp"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
@@ -135,6 +136,26 @@ func recoverableFailureRetryAfterWithHint(now time.Time, retryAfter *time.Durati
 		return now.Add(transientErrorCooldown)
 	}
 	return now.Add(time.Duration(seconds) * time.Second)
+}
+
+const codexOverloadCooldownCap = 30 * time.Second
+
+// Keep the original Retry-After on the upstream error; cap only CPA's local
+// cooldown for the explicit Codex overload signal, not rate limits or generic 5xx.
+func upstreamFailureRetryAfter(auth *Auth, err *Error, now time.Time, retryAfter *time.Duration, disableCooling bool) time.Time {
+	deadline := recoverableFailureRetryAfterWithHint(now, retryAfter, disableCooling)
+	capAt := now.Add(codexOverloadCooldownCap)
+	if !deadline.After(capAt) || auth == nil || executorKeyFromAuth(auth) != "codex" || err == nil || isForceCooldownError(err) {
+		return deadline
+	}
+	if err.HTTPStatus != http.StatusBadGateway && err.HTTPStatus != http.StatusServiceUnavailable {
+		return deadline
+	}
+	const overload = "server_is_overloaded"
+	if err.Code == overload || ojson.Get(err.Message, "error.code").String() == overload || ojson.Get(err.Message, "code").String() == overload {
+		return capAt
+	}
+	return deadline
 }
 
 // SetConfig updates the runtime config snapshot used by request-time helpers.
@@ -1969,7 +1990,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								}
 							}
 						case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
-							state.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, result.RetryAfter, disableCooling)
+							state.NextRetryAfter = upstreamFailureRetryAfter(auth, result.Error, now, result.RetryAfter, disableCooling)
 							state.Unavailable = !state.NextRetryAfter.IsZero()
 						default:
 							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
@@ -4378,7 +4399,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.NextRetryAfter = next
 		case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
 			auth.StatusMessage = "transient upstream error"
-			auth.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, retryAfter, disableCooling)
+			auth.NextRetryAfter = upstreamFailureRetryAfter(auth, resultErr, now, retryAfter, disableCooling)
 			auth.Unavailable = !auth.NextRetryAfter.IsZero()
 		default:
 			if auth.StatusMessage == "" {
