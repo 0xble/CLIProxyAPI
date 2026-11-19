@@ -28,7 +28,7 @@ disabled on the fork for that reason.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
 Accepted upstream baseline before CPA-001: `d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5` (`v8.0.23`).
-Source candidate upstream release: `db7f177d6b0e` (`v8.0.78`), with `a5e8f69e5630` (`v8.0.77`), merged cleanly over fork main `66948be659dbfb448869c7e62e5df371ab23854a` (`v8.0.76` plus CPA-011) after reviewing the official release notes. No fork-patched surface changed. CPA-001 through CPA-011 are retained.
+Source candidate upstream release: `db7f177d6b0e` (`v8.0.78`), with `a5e8f69e5630` (`v8.0.77`), merged cleanly over fork main `66948be659dbfb448869c7e62e5df371ab23854a` (`v8.0.76` plus CPA-011) after reviewing the official release notes. v8.0.78 touches the CPA-010 Codex stream executors without conflict, and the patch review above records why the failover hooks are intact. CPA-001 through CPA-011 are retained.
 
 Prior candidate upstream release: `7df56074b252` (`v8.0.76`), merged with `v8.0.75` over fork main `0cdae2d2c630db78111aa0a25eba7bb9227b1fb0` (`v8.0.74` plus CPA-011) after reviewing the official release notes. Two conflicts resolved: upstream now carries the fork's expired-refresh-token terminal match, and the plugin Retry-After test keeps the fork's exact-deadline assertion with upstream's 10s floor. CPA-001 through CPA-011 are retained.
 
