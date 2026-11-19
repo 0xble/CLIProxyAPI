@@ -878,6 +878,7 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 		traffic, _ = ctx.Value(trafficPickKey{}).(*trafficPick)
 	}
 	var hardAvailable []*Auth
+	var trafficRechecks map[int]time.Time
 	cooldownCount := 0
 	unauthorizedCount := 0
 	var earliest time.Time
@@ -896,8 +897,19 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 		if reason == blockReasonCooldown {
 			cooldownCount++
 		}
-		if reason != blockReasonDisabled && next.After(now) && (earliest.IsZero() || next.Before(earliest)) {
-			earliest = next
+		if reason != blockReasonDisabled && next.After(now) {
+			if earliest.IsZero() || next.Before(earliest) {
+				earliest = next
+			}
+			if traffic != nil {
+				if trafficRechecks == nil {
+					trafficRechecks = make(map[int]time.Time)
+				}
+				priority := authPriority(candidate)
+				if old := trafficRechecks[priority]; old.IsZero() || next.Before(old) {
+					trafficRechecks[priority] = next
+				}
+			}
 		}
 		if hasUnauthorizedAuthFailure(candidate) {
 			unauthorizedCount++
@@ -907,8 +919,13 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 	if len(hardAvailable) > 0 {
 		shaped, err := m.shapeTraffic(ctx, traffic, hardAvailable, routeModel)
 		if err != nil {
-			if deferred, ok := err.(*trafficDeferred); ok && earliest.After(traffic.now) && earliest.Before(deferred.until) {
-				deferred.until = earliest
+			if deferred, ok := err.(*trafficDeferred); ok && !deferred.bound {
+				priority := authPriority(highestPriorityAuths(hardAvailable)[0])
+				for tier, next := range trafficRechecks {
+					if tier >= priority && next.After(traffic.now) && next.Before(deferred.until) {
+						deferred.until = next
+					}
+				}
 			}
 			return nil, err
 		}

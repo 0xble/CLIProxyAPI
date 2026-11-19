@@ -107,6 +107,124 @@ func testTrafficShapingSelectionLadder(t *testing.T, rebind string) {
 	}
 }
 
+func TestTrafficShapingBackgroundPreservesBinding(t *testing.T) {
+	for _, rebind := range []string{"any", "never"} {
+		t.Run(rebind, func(t *testing.T) {
+			selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &FillFirstSelector{}, TTL: time.Hour, RebindOn: rebind})
+			defer selector.Stop()
+			m, clock, pick := newTrafficSelectionTest(t, selector)
+			a, b := shapedAuth("a", false), shapedAuth("b", false)
+			if got, err := pick("interactive", a); err != nil || got == nil || got.ID != a.ID {
+				t.Fatalf("initial pick = %v, %v; want %s", got, err, a.ID)
+			}
+			if got, err := pick("background", b); got != nil || !isRequestStopError(err) || SafeResponseHeaders(err).Get("Retry-After") != "3540" || clock.waited != time.Minute {
+				t.Fatalf("background pick = %v, %v, headers %v, waited %v; want policy deferral", got, err, SafeResponseHeaders(err), clock.waited)
+			}
+			if got, status := m.LookupSessionAffinity("mixed", "traffic-tier-test-model", "sticky"); status != "bound" || got == nil || got.ID != a.ID {
+				t.Fatalf("binding = %v, %s; want %s", got, status, a.ID)
+			}
+			if got, err := pick("interactive"); err != nil || got == nil || got.ID != a.ID {
+				t.Fatalf("interactive pick after deferral = %v, %v; want %s", got, err, a.ID)
+			}
+			// The cached account can be in a lower tier (e.g. after a higher
+			// tier recovers from a hard cooldown); soft limits must not move it.
+			higher := shapedAuth("higher", false)
+			higher.Attributes = map[string]string{"priority": "10"}
+			if got, err := pick("background", higher); got != nil || !isRequestStopError(err) || SafeResponseHeaders(err).Get("Retry-After") != "3540" {
+				t.Fatalf("background lower-tier binding = %v, %v, headers %v; want policy deferral", got, err, SafeResponseHeaders(err))
+			}
+			if got, err := pick("interactive"); err != nil || got == nil || got.ID != a.ID {
+				t.Fatalf("interactive lower-tier binding = %v, %v; want %s", got, err, a.ID)
+			}
+		})
+	}
+}
+
+func TestTrafficShapingSoftLimitsStayInPriorityTier(t *testing.T) {
+	for _, affinity := range []bool{false, true} {
+		name := "plain"
+		var selector Selector = &FillFirstSelector{}
+		if affinity {
+			name = "affinity"
+			sticky := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: selector, RebindOn: "any"})
+			defer sticky.Stop()
+			selector = sticky
+		}
+		t.Run(name, func(t *testing.T) {
+			m, clock, pick := newTrafficSelectionTest(t, selector)
+			subscription := shapedAuth("subscription", false)
+			subscription.Attributes = map[string]string{"priority": "10"}
+			paid := &Auth{ID: "paid", Provider: "claude", Status: StatusActive, Attributes: map[string]string{"api_key": "test-key"}}
+			if _, err := pick("", subscription, paid); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := pick(""); err != nil || got == nil || got.ID != subscription.ID {
+				t.Fatalf("unbound interactive pick = %v, %v; want subscription override", got, err)
+			}
+			if got, err := pick("background"); got != nil || !isRequestStopError(err) || SafeResponseHeaders(err).Get("Retry-After") != "3540" || clock.waited != time.Minute {
+				t.Fatalf("background pick = %v, %v, headers %v, waited %v; want policy deferral", got, err, SafeResponseHeaders(err), clock.waited)
+			}
+			m.mu.Lock()
+			m.auths[paid.ID].credentialRetryAfter = time.Now().Add(5 * time.Minute)
+			m.mu.Unlock()
+			if _, err := pick("background"); SafeResponseHeaders(err).Get("Retry-After") != "3480" {
+				t.Fatalf("background retry followed a lower tier cooldown: %v, headers %v", err, SafeResponseHeaders(err))
+			}
+			m.mu.Lock()
+			m.auths[subscription.ID].credentialRetryAfter = clock.now.Add(time.Hour)
+			m.auths[paid.ID].credentialRetryAfter = time.Time{}
+			m.mu.Unlock()
+			if got, err := pick("background"); err != nil || got == nil || got.ID != paid.ID {
+				t.Fatalf("hard cooldown pick = %v, %v; want lower tier fallback", got, err)
+			}
+		})
+	}
+}
+
+// The empty class denotes an interactive request with no affinity identity.
+func newTrafficSelectionTest(t *testing.T, selector Selector) (*Manager, *trafficTestClock, func(class string, register ...*Auth) (*Auth, error)) {
+	t.Helper()
+	m := NewManager(nil, selector, nil)
+	m.RegisterExecutor(schedulerProviderTestExecutor{provider: "claude"})
+	clock := &trafficTestClock{now: time.Now()}
+	m.SetContinuityClockForTest(clock)
+	const model = "traffic-tier-test-model"
+	return m, clock, func(class string, register ...*Auth) (*Auth, error) {
+		t.Helper()
+		for _, a := range register {
+			if _, err := m.Register(context.Background(), a); err != nil {
+				t.Fatal(err)
+			}
+			registerSchedulerModels(t, "claude", model, a.ID)
+		}
+		opts := executor.Options{Headers: http.Header{}}
+		if class != "" {
+			opts.Headers.Set(requestClassHeader, class)
+			opts.Headers.Set("X-Session-Id", "sticky")
+		}
+		ctx, opts := m.consumeTrafficClass(context.Background(), opts, false)
+		a, _, _, err := m.pickWithTraffic(ctx, []string{"claude"}, model, opts, nil)
+		return a, err
+	}
+}
+
+func TestTrafficShapingNoDaySleepWithoutNightDuty(t *testing.T) {
+	m := NewManager(nil, &FillFirstSelector{}, nil)
+	a := shapedAuth("first-daytime-pick", true)
+	m.auths[a.ID] = a
+	now := time.Date(2026, 11, 18, 8, 0, 0, 0, trafficZone)
+	ctx := context.Background()
+	day, dawn, err := trafficDate(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, rest := m.trafficNight(ctx, day, now, dawn); rest != "" {
+			t.Fatalf("account %q assigned daytime sleep without night duty", rest)
+		}
+	}
+}
+
 func TestTrafficShapingSchedule(t *testing.T) {
 	for _, day := range []time.Time{time.Date(2026, 3, 8, 0, 0, 0, 0, trafficZone), time.Date(2026, 11, 1, 0, 0, 0, 0, trafficZone)} {
 		m := NewManager(nil, &FillFirstSelector{}, nil)

@@ -184,7 +184,8 @@ func (m *Manager) ClearCodexCreditPark(ctx context.Context, snapshot *Auth) (boo
 // ApplyVerifiedCodexCreditBalance releases an active park after a trusted balance
 // reader observes a positive, spendable balance for this exact credential. Pass
 // the auth snapshot used by the reader and its observation time, not request
-// headers or inferred quota. No upstream request is made here.
+// headers or inferred quota. No upstream request is made here. There is no
+// production caller yet; operators release parks via the authenticated clear route.
 func (m *Manager) ApplyVerifiedCodexCreditBalance(snapshot *Auth, balance float64, observedAt time.Time) bool {
 	if m == nil || snapshot == nil || !(balance > 0) || math.IsInf(balance, 0) || observedAt.IsZero() {
 		return false

@@ -89,23 +89,43 @@ type trafficRequest struct {
 	enabled    bool
 }
 
-// Remove the hop-local hint even if no credential opts in. Treat duplicate and
-// invalid hints as interactive. Do not mutate caller-owned headers.
-func (m *Manager) consumeTrafficClass(ctx context.Context, opts cliproxyexecutor.Options, countOnly bool) (context.Context, cliproxyexecutor.Options) {
+type trafficClassKey struct{}
+
+// ConsumeTrafficClassHeader removes the hop-local hint from handler-owned
+// headers and carries the classification to the manager. Duplicate and invalid
+// hints are treated as interactive.
+func ConsumeTrafficClassHeader(ctx context.Context, headers http.Header) context.Context {
 	var values []string
-	cloned := false
-	for key, headers := range opts.Headers {
-		if !strings.EqualFold(key, requestClassHeader) {
-			continue
+	found := false
+	for key, entries := range headers {
+		if strings.EqualFold(key, requestClassHeader) {
+			values = append(values, entries...)
+			delete(headers, key)
+			found = true
 		}
-		if !cloned {
-			opts.Headers = opts.Headers.Clone()
-			cloned = true
-		}
-		values = append(values, headers...)
-		delete(opts.Headers, key)
 	}
-	request := &trafficRequest{background: len(values) == 1 && strings.EqualFold(strings.TrimSpace(values[0]), "background"), enabled: !m.HomeEnabled(), countOnly: countOnly}
+	if !found {
+		return ctx
+	}
+	background := len(values) == 1 && strings.EqualFold(strings.TrimSpace(values[0]), "background")
+	return context.WithValue(ctx, trafficClassKey{}, background)
+}
+
+// SDK callers may supply the hint in Options. Strip it without mutating their
+// headers, even when shaping is inactive. An inbound handler hint takes precedence.
+func (m *Manager) consumeTrafficClass(ctx context.Context, opts cliproxyexecutor.Options, countOnly bool) (context.Context, cliproxyexecutor.Options) {
+	background, classified := ctx.Value(trafficClassKey{}).(bool)
+	for key := range opts.Headers {
+		if strings.EqualFold(key, requestClassHeader) {
+			opts.Headers = opts.Headers.Clone()
+			classifiedCtx := ConsumeTrafficClassHeader(ctx, opts.Headers)
+			if !classified {
+				background, _ = classifiedCtx.Value(trafficClassKey{}).(bool)
+			}
+			break
+		}
+	}
+	request := &trafficRequest{background: background, enabled: !m.HomeEnabled(), countOnly: countOnly}
 	return context.WithValue(ctx, trafficRequestKey{}, request), opts
 }
 
@@ -157,6 +177,10 @@ func (m *Manager) trafficNight(ctx context.Context, day int, now, dawn time.Time
 	blocked, _, _ := authAvailabilityForRequest(ctx, m.auths[state.night], "", now)
 	if state.day == day && (!blocked || !now.Before(dawn)) {
 		return state.night, state.daytimeSleep
+	}
+	if !now.Before(dawn) {
+		// No duty was assigned during this night's window. Do not invent rest.
+		return "", ""
 	}
 	var ids []string
 	var best string
@@ -312,6 +336,7 @@ func (m *Manager) trafficDecision(a *Auth, p trafficPolicy, session string, pinn
 type trafficDeferred struct {
 	until time.Time
 	now   time.Time
+	bound bool
 }
 
 func (e *trafficDeferred) Error() string {
@@ -332,10 +357,29 @@ type trafficPick struct {
 	bound   string
 }
 
-// Called after hard availability and before priority tiers are built.
+// Called after hard availability. Soft limits only shape the highest available
+// tier, except that an existing binding may legitimately point into a lower tier.
 func (m *Manager) shapeTraffic(ctx context.Context, options *trafficPick, candidates []*Auth, model string) ([]*Auth, error) {
-	hasPolicy := false
-	for _, a := range candidates {
+	background := options.request.background
+	bound := pinnedAuthIDFromMetadata(options.opts.Metadata)
+	if bound == "" {
+		if affinity, ok := m.selector.(*SessionAffinitySelector); ok {
+			bound, _ = affinity.boundAuthForRequest(nil, selectionArgForSelector(affinity, model), options.opts)
+		}
+	}
+	options.bound = bound
+	tier := highestPriorityAuths(candidates)
+	var lowerBound *Auth
+	if bound != "" && len(tier) < len(candidates) {
+		for _, a := range candidates {
+			if a.ID == bound && authPriority(a) < authPriority(tier[0]) {
+				lowerBound = a
+				break
+			}
+		}
+	}
+	_, hasPolicy := trafficPolicyFor(lowerBound)
+	for _, a := range tier {
 		if _, ok := trafficPolicyFor(a); ok {
 			hasPolicy = true
 			break
@@ -344,15 +388,7 @@ func (m *Manager) shapeTraffic(ctx context.Context, options *trafficPick, candid
 	if !hasPolicy {
 		return candidates, nil
 	}
-	background := options.request.background
-	bound := pinnedAuthIDFromMetadata(options.opts.Metadata)
 	session := CanonicalSessionID(options.opts.Headers, options.opts.OriginalRequest, options.opts.Metadata)
-	if bound == "" {
-		if affinity, ok := m.selector.(*SessionAffinitySelector); ok {
-			bound, _ = affinity.boundAuthForRequest(nil, selectionArgForSelector(affinity, model), options.opts)
-		}
-	}
-	options.bound = bound
 	now := options.now
 	day, dawn, err := trafficDate(now)
 	if err != nil {
@@ -364,29 +400,53 @@ func (m *Manager) shapeTraffic(ctx context.Context, options *trafficPick, candid
 	if err == nil {
 		night, rest = m.trafficNight(ctx, day, now, dawn)
 	}
-	var eligible []*Auth
-	var next time.Time
-	for _, a := range candidates {
+	decision := func(a *Auth) trafficDecision {
 		if p, ok := trafficPolicyFor(a); ok {
 			d := m.trafficDecision(a, p, session, a.ID == bound, background, now, day, dawn, night, rest)
 			if len(d.reasons) > 0 {
-				if next.IsZero() || d.until.Before(next) {
-					next = d.until
-				}
 				log.WithFields(log.Fields{"provider": a.Provider, "reasons": d.reasons, "eligible_at": d.until, "background": background}).Debug("account traffic preference deferred a candidate")
-				continue
 			}
+			return d
+		}
+		return trafficDecision{}
+	}
+	// A soft-deferred binding is still hard-available. Do not hand another
+	// account to affinity: that would turn a background delay into a rebind
+	// or a strict-affinity failure for the shared interactive session.
+	if lowerBound != nil {
+		if d := decision(lowerBound); len(d.reasons) > 0 {
+			return nil, &trafficDeferred{until: d.until, now: now, bound: true}
+		}
+	}
+	var eligible []*Auth
+	var next time.Time
+	for _, a := range tier {
+		d := decision(a)
+		if len(d.reasons) > 0 {
+			if a.ID == bound {
+				return nil, &trafficDeferred{until: d.until, now: now, bound: true}
+			}
+			if next.IsZero() || d.until.Before(next) {
+				next = d.until
+			}
+			continue
 		}
 		eligible = append(eligible, a)
 	}
-	if len(eligible) > 0 {
-		return eligible, nil
+	if len(eligible) == 0 {
+		if background {
+			if lowerBound != nil {
+				return []*Auth{lowerBound}, nil
+			}
+			return nil, &trafficDeferred{until: next, now: now}
+		}
+		log.WithField("candidate_count", len(tier)).Debug("interactive request overriding account traffic preference")
+		eligible = tier
 	}
-	if !background {
-		log.WithField("candidate_count", len(candidates)).Debug("interactive request overriding account traffic preference")
-		return candidates, nil
+	if lowerBound != nil {
+		eligible = append(eligible, lowerBound)
 	}
-	return nil, &trafficDeferred{until: next, now: now}
+	return eligible, nil
 }
 
 func minDeadline(a, b time.Time) time.Time {

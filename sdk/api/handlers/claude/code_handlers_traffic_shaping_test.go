@@ -99,6 +99,9 @@ func TestTrafficShapingBackgroundHTTPDeferral(t *testing.T) {
 				req.Header.Set(classHeader, "background")
 				rec := httptest.NewRecorder()
 				router.ServeHTTP(rec, req)
+				if len(req.Header.Values(classHeader)) != 0 {
+					t.Error("request-class hint remained on the inbound request")
+				}
 				if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "3540" || !strings.Contains(rec.Body.String(), "background request deferred") {
 					t.Fatalf("want 503 with policy Retry-After; got %d, headers %v, body %s", rec.Code, rec.Header(), rec.Body.String())
 				}
