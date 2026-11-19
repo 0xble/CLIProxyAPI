@@ -135,7 +135,7 @@ func TestCodexCreditPark_CreditExhaustedRoutingAndRestart(t *testing.T) {
 	if !m.ApplyVerifiedCodexCreditBalance(reloaded, 2, time.Now()) {
 		t.Fatal("did not accept the later positive balance")
 	}
-	m, _ = newManager()
+	m, order = newManager()
 	if err := m.RestoreCooldownStates(ctx); err != nil {
 		t.Fatal(err)
 	}
