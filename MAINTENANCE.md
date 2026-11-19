@@ -4,6 +4,8 @@
 
 Upstream release `v8.0.77` (`a5e8f69e5630`) is merged cleanly over fork main `66948be659dbfb448869c7e62e5df371ab23854a` (v8.0.76 plus CPA-001 through CPA-011, #50). CPA-001 through CPA-011 and the management redaction contract are preserved. No conflicts.
 
+Post-merge repair: upstream's own `TestModelsWithClientVersionReturnsCodexCatalog` fails on the v8.0.77 tag, because `a5e8f69e` refreshed `codex_client_models.json` from Codex CLI 0.169.0 and gpt-5.5 no longer offers the priority service tier, while the test still expects one. The test now takes the expected tiers from the catalog template, backported unchanged from open upstream PR router-for-me/CLIProxyAPI#7646. Drop this note once a release contains that PR.
+
 Upstream changes reviewed: GPT-6.2 Codex models and a Codex CLI version bump, payload replace rules with regex, path targets, and system/developer roles, Claude and Responses translators relaying PDF, document, and media content in tool results, nested `input_audio` for OpenAI Chat to Codex, local errors separated from upstream responses in logs, and plugin executor usage attribution with cache-write TTL token counts.
 
 Patch review:
