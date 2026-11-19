@@ -373,6 +373,9 @@ func (m *Manager) finishAuthUpdate(ctx context.Context, committed *Auth, persist
 		m.scheduler.upsertAuth(committed.Clone())
 	}
 	m.structuralEpoch.Add(1)
+	if persistCooldown && strings.EqualFold(committed.Provider, "codex") {
+		m.projectAuthModels(committed, time.Now())
+	}
 	m.queueRefreshReschedule(committed.ID)
 	m.hook.OnAuthUpdated(ctx, committed.Clone())
 	if persistCooldown {
@@ -668,6 +671,12 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	auth.UpdatedAt = now
 	cooldownStateChanged = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) || cooldownStateChanged
 	seedInitialForceCooldownDeadlines(auth)
+	auth.creditPark = creditParkState{}
+	if !credChanged && !auth.Disabled && auth.Status != StatusDisabled && auth.CodexCreditResetDay() == existing.CodexCreditResetDay() {
+		auth.creditPark = existing.creditPark
+	} else if existing.CodexCreditParkedUntil(now).After(now) {
+		cooldownStateChanged = true
+	}
 	if auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	} else if m.cooldownDisabledForAuth(auth) {

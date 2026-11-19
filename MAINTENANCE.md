@@ -192,7 +192,14 @@ This fork supplies the local gateway build from fork `main` and tracks upstream 
 - Durable regressions: `TestManagerSessionAffinityTierLocked` in `sdk/cliproxy/auth/session_affinity_tier_locked_test.go` (single and mixed provider: sticky within tier, same-tier failover, next-tier fallback, higher-tier reclaim) and `TestRoutingRuntimeStateTierLockedAffinity` in `sdk/cliproxy/service_config_weight_test.go`.
 - Retirement condition: retire when a released upstream offers affinity that never holds a session below the highest available priority tier and passes these regressions.
 
-Use stable IDs `CPA-012` and onward for future logical patches.
+### CPA-012 — park depleted monthly Codex API keys
+
+- Required behavior: opt in per key with `credit-reset-day`. Preserve configured priority and weight while funded. A structured `insufficient_quota` or `credit_balance_exhausted` result parks just that key for all models until 00:00 UTC on the next configured reset day (clamped to month end), or a newer verified positive balance. Ordinary request failures, OAuth, and keys without a reset day keep existing behavior. No upstream balance or inference polling is added.
+- Persistence and visibility: `routing.cooldown.save-cooldown-status` retains the independent park across restart for the same credential and reset day. Missing or unusable state does not block routing. The v8 credential list and logs expose the reason and UTC deadline without recording the upstream body in the park.
+- Durable regressions: `TestCodexCreditPark*` and `TestNextCreditReset` in `sdk/cliproxy/auth`, plus config synthesis and v8 management tests.
+- Retirement condition: retire when released upstream offers equivalent opt-in, credential-scoped parking and passes the restart, reload, and routing regressions.
+
+Use stable IDs `CPA-013` and onward for future logical patches.
 Upstream maintenance-contract issue/PR associations: none found when checked 2026-09-13.
 Retain this contract while maintaining the fork. Retire behavioral patches only after a released upstream implementation passes their complete regression contract.
 

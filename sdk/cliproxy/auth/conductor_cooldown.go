@@ -396,18 +396,32 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 			m.scheduler.upsertAuth(snapshot)
 		}
 	}
+	for _, snapshot := range snapshotsByID {
+		if snapshot.CodexCreditParkedUntil(now).After(now) {
+			m.projectAuthModels(snapshot, now)
+		}
+	}
 	m.persistCooldownStates(context.Background())
 	return nil
 }
 
 func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now time.Time) bool {
 	authID := strings.TrimSpace(record.AuthID)
-	if authID == "" || record.NextRetryAfter.IsZero() || !record.NextRetryAfter.After(now) {
+	auth := m.auths[authID]
+	if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 		return false
 	}
-	auth := m.auths[authID]
-	if auth == nil || auth.Disabled || auth.Status == StatusDisabled || (m.cooldownDisabledForAuth(auth) && !isForceCooldownRecordAt(record, now)) || hasUnauthorizedAuthFailure(auth) {
-		return false
+	parkRestored := false
+	if park := record.CreditPark; record.Model == "" && park != nil && park.ResetDay > 0 && auth.CodexCreditResetDay() == park.ResetDay &&
+		park.Grant == AuthGrantFingerprint(auth) &&
+		!park.ObservedAt.IsZero() && !park.ObservedAt.After(now) && park.ObservedAt.After(auth.creditPark.ObservedAt) &&
+		park.Until.After(now) && park.Until.Equal(nextCreditReset(park.ObservedAt, park.ResetDay)) {
+		auth.creditPark = *park
+		auth.Generation++
+		parkRestored = true
+	}
+	if !record.NextRetryAfter.After(now) || (m.cooldownDisabledForAuth(auth) && !isForceCooldownRecordAt(record, now)) || hasUnauthorizedAuthFailure(auth) {
+		return parkRestored
 	}
 	updatedAt := record.UpdatedAt
 	if updatedAt.IsZero() {
@@ -1288,7 +1302,21 @@ func (m *Manager) cooldownStateRecordsForAuthLocked(auth *Auth, now time.Time) [
 	}
 	coolingDisabled := m.cooldownDisabledForAuth(auth)
 	records := make([]CooldownStateRecord, 0, 1+len(auth.ModelStates))
-	if record, ok := authCooldownStateRecord(auth, now); ok && (!coolingDisabled || isForceCooldownRecordAt(record, now)) {
+	record, regular := authCooldownStateRecord(auth, now)
+	regular = regular && (!coolingDisabled || isForceCooldownRecordAt(record, now))
+	if auth.CodexCreditParkedUntil(now).After(now) {
+		if !regular {
+			record = CooldownStateRecord{Provider: auth.Provider, AuthID: auth.ID, AuthFile: cooldownAuthFile(auth), UpdatedAt: auth.creditPark.ObservedAt}
+		}
+		park := auth.creditPark
+		record.CreditPark = &park
+		// Keep a stable timestamp for park-only records across unrelated results.
+		if park.ObservedAt.After(record.UpdatedAt) {
+			record.UpdatedAt = park.ObservedAt
+		}
+		regular = true
+	}
+	if regular {
 		records = append(records, record)
 	}
 	for model, state := range auth.ModelStates {
@@ -1315,7 +1343,7 @@ func cooldownStateRecordsEqual(a, b []CooldownStateRecord) bool {
 }
 
 func cooldownStateRecordEqual(a, b CooldownStateRecord) bool {
-	if a.CredentialQuotaPropagated != b.CredentialQuotaPropagated {
+	if !equalCreditPark(a.CreditPark, b.CreditPark) || a.CredentialQuotaPropagated != b.CredentialQuotaPropagated {
 		return false
 	}
 	if a.Provider != b.Provider ||
@@ -1588,6 +1616,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth
+	var parked, parkStarted bool
 	cooldownStateChanged := false
 	scheduleUnauthorizedRefresh := false
 	now := time.Now()
@@ -1641,6 +1670,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			auth.Failed++
 		}
 		wasTerminalUnauthorized := hasUnauthorizedAuthFailure(auth)
+		if !wasTerminalUnauthorized {
+			parked, parkStarted = auth.parkOnCreditExhaustion(result, now)
+		}
+		if parked {
+			result.CredentialScope = true
+		}
 
 		// retainModelCooldown pins a still-live model cooldown against a success
 		// from an execution dispatched before that cooldown was recorded. Such a
@@ -1690,7 +1725,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			} else if !auth.Disabled {
 				clearAuthStateOnSuccess(auth, now)
 			}
-		} else {
+		} else if !parked {
 			if modelKey != "" {
 				if auth.Disabled || auth.Status == StatusDisabled {
 					// A disabled credential (operator action or terminal TOS) is
@@ -2314,8 +2349,21 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 
-	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
+	if parkStarted {
+		log.WithFields(log.Fields{"auth_id": result.AuthID, "reason": CodexCreditParkReason, "until": authSnapshot.creditPark.Until}).Info("Codex API key parked after credit exhaustion")
+	}
+	m.projectAuthModels(authSnapshot, now)
+	m.hook.OnResult(ctx, result)
+	m.publishErrorEvent(result, authSnapshot)
+	m.updateSessionAffinity(result)
+}
+
+func (m *Manager) projectAuthModels(authSnapshot *Auth, now time.Time) {
+	if authSnapshot == nil {
+		return
+	}
 	reg := registry.GetGlobalRegistry()
+	supportedModels, regEpoch := reg.GetModelsAndEpochForClient(authSnapshot.ID)
 	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
 	for _, sm := range supportedModels {
 		if sm == nil || strings.TrimSpace(sm.ID) == "" {
@@ -2323,13 +2371,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 		projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
 	}
-	if authSnapshot != nil && len(projections) > 0 {
-		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
+	if len(projections) > 0 {
+		reg.ApplyClientModelProjections(authSnapshot.ID, regEpoch, authSnapshot.Generation, projections)
 	}
-
-	m.hook.OnResult(ctx, result)
-	m.publishErrorEvent(result, authSnapshot)
-	m.updateSessionAffinity(result)
 }
 
 func (m *Manager) updateSessionAffinity(result Result) {

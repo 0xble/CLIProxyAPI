@@ -1039,7 +1039,7 @@ func isCredentialBlocked(auth *Auth, supportedModelCount int, now time.Time) boo
 	if excluded, _ := isQuotaReserveExcluded(auth, now); excluded {
 		return true
 	}
-	if !auth.credentialRetryAfter.IsZero() && auth.credentialRetryAfter.After(now) {
+	if !auth.CodexCreditParkedUntil(now).IsZero() || auth.credentialRetryAfter.After(now) {
 		return true
 	}
 	if len(auth.ModelStates) == 0 {

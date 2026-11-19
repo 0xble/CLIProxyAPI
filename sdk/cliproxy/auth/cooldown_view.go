@@ -27,6 +27,11 @@ func CooldownSnapshotForAuth(auth *Auth, now time.Time) []CooldownView {
 	if auth == nil {
 		return views
 	}
+	if until := auth.CodexCreditParkedUntil(now); !until.IsZero() {
+		view := newCooldownView("credential", "", until, now, QuotaState{}, "", nil)
+		view.Reason = CodexCreditParkReason
+		views = append(views, view)
+	}
 	// Match the explicit credential-wide gate in isAuthBlockedForModel. Other
 	// auth-level fields can be model aggregates and must not become global gates.
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {

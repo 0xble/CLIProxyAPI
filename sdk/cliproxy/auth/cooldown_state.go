@@ -69,6 +69,8 @@ type CooldownStateRecord struct {
 	// IndependentNonQuotaCooldownUntil persists NonQuotaCooldownUntil for
 	// IndependentState beneath a credential_quota wrap.
 	IndependentNonQuotaCooldownUntil time.Time `json:"independent_non_quota_cooldown_until,omitempty"`
+	// CreditPark is independent of mutable model/rate-limit cooldowns.
+	CreditPark *creditParkState `json:"credit_park,omitempty"`
 }
 
 // CooldownStateStore persists runtime cooldown state independently from auth tokens.

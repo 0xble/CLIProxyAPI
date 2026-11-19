@@ -1253,6 +1253,14 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 }
 
 func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model string, now time.Time, clientHeaders ...http.Header) (bool, blockReason, time.Time) {
+	blocked, reason, next := authAvailabilityForRequest(ctx, auth, model, now, clientHeaders...)
+	if until := auth.CodexCreditParkedUntil(now); !until.IsZero() && (!blocked || !next.IsZero() && until.After(next)) {
+		return true, blockReasonCooldown, until
+	}
+	return blocked, reason, next
+}
+
+func authAvailabilityForRequest(ctx context.Context, auth *Auth, model string, now time.Time, clientHeaders ...http.Header) (bool, blockReason, time.Time) {
 	if auth == nil {
 		return true, blockReasonOther, time.Time{}
 	}

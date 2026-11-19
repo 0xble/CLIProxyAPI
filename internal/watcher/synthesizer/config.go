@@ -91,6 +91,9 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	if ctx == nil || ctx.Config == nil {
 		return out, nil
 	}
+	if errValidate := ctx.Config.ValidateCodexCreditResetDays(); errValidate != nil {
+		return nil, errValidate
+	}
 	if errValidate := ctx.Config.ValidateCredentialWeights(); errValidate != nil {
 		return nil, fmt.Errorf("synthesize config API key auths: %w", errValidate)
 	}
@@ -324,6 +327,9 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		}
 		if entry.Websockets {
 			attrs["websockets"] = "true"
+		}
+		if provider == "codex" && key != "" && entry.CreditResetDay >= 1 && entry.CreditResetDay <= 31 {
+			attrs[coreauth.AttributeCodexCreditResetDay] = strconv.Itoa(entry.CreditResetDay)
 		}
 		if provider == "codex" && entry.AlphaSearch {
 			attrs[coreauth.AttributeCodexAlphaSearch] = "true"

@@ -320,6 +320,11 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 			suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
 		}
 	}
+	if until := auth.CodexCreditParkedUntil(now); !openEnded && !until.IsZero() && until.After(suspendUntil) {
+		isSuspended = true
+		suspendReason = CodexCreditParkReason
+		suspendUntil = until
+	}
 	if openEnded || !isSuspended {
 		suspendUntil = time.Time{}
 	}
