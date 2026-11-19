@@ -78,9 +78,12 @@ func ParseQuotaReservePolicy(metadata map[string]any) (QuotaReservePolicy, bool,
 	return QuotaReservePolicy{ReservePercent: reserve, ResetWindow: window, FinalReservePercent: final}, true, nil
 }
 
-// ValidateQuotaReservePolicy rejects malformed opt-in metadata at load and write time.
+// ValidateQuotaReservePolicy checks the reserve and any opt-in traffic policy.
 func ValidateQuotaReservePolicy(metadata map[string]any) error {
-	_, _, err := ParseQuotaReservePolicy(metadata)
+	if _, _, err := ParseQuotaReservePolicy(metadata); err != nil {
+		return err
+	}
+	_, _, err := parseTrafficPolicy(metadata)
 	return err
 }
 

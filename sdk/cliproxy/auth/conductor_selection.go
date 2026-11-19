@@ -873,6 +873,11 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 	}
 
 	availableByPriority := make(map[int][]*Auth)
+	var traffic *trafficPick
+	if ctx != nil {
+		traffic, _ = ctx.Value(trafficPickKey{}).(*trafficPick)
+	}
+	var hardAvailable []*Auth
 	cooldownCount := 0
 	unauthorizedCount := 0
 	var earliest time.Time
@@ -880,6 +885,10 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
 		blocked, reason, next := isAuthBlockedForModelForRequest(ctx, candidate, checkModel, now, clientHeaders...)
 		if !blocked {
+			if traffic != nil {
+				hardAvailable = append(hardAvailable, candidate)
+				continue
+			}
 			priority := authPriority(candidate)
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
 			continue
@@ -895,6 +904,19 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 		}
 	}
 
+	if len(hardAvailable) > 0 {
+		shaped, err := m.shapeTraffic(traffic, hardAvailable, routeModel)
+		if err != nil {
+			if deferred, ok := err.(*trafficDeferred); ok && earliest.After(traffic.now) && earliest.Before(deferred.until) {
+				deferred.until = earliest
+			}
+			return nil, err
+		}
+		for _, auth := range shaped {
+			priority := authPriority(auth)
+			availableByPriority[priority] = append(availableByPriority[priority], auth)
+		}
+	}
 	if len(availableByPriority) == 0 {
 		lastCandidateErr := latestCandidateErrorForModel(auths, func(candidate *Auth) string {
 			return m.selectionModelForAuth(candidate, routeModel)
@@ -2375,7 +2397,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	)
 	if len(candidates) > 0 {
 		available, selectorAuths, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, provider, model, now, schedulerAcross, opts.Headers)
-		if errAvailable != nil && !canInspectUnavailableAffinity {
+		if errAvailable != nil && (!canInspectUnavailableAffinity || isRequestStopError(errAvailable)) {
 			m.mu.RUnlock()
 			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
 			return nil, nil, errAvailable
@@ -2881,7 +2903,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	var accountingAuths []*Auth
 	if trackPinnedAccounting && len(candidates) > 0 && errAvailable == nil {
-		fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
+		fullAvailable, _, errAccounting := m.availableAuthsForSelector(context.WithValue(ctx, trafficPickKey{}, (*trafficPick)(nil)), selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
 		if errAccounting != nil {
 			m.mu.RUnlock()
 			return nil, nil, "", errAccounting
@@ -2914,7 +2936,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 				return nil, nil, "", errAvailable
 			}
 			if trackPinnedAccounting {
-				fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
+				fullAvailable, _, errAccounting := m.availableAuthsForSelector(context.WithValue(ctx, trafficPickKey{}, (*trafficPick)(nil)), selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
 				if errAccounting != nil {
 					m.mu.RUnlock()
 					return nil, nil, "", errAccounting

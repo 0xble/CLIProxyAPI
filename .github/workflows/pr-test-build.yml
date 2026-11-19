@@ -19,6 +19,12 @@ jobs:
           cache: true
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
+      - name: Routing policy regression tests
+        run: >-
+          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./internal/api/handlers/management
+          ./internal/config ./internal/runtime/executor/helps
+          -run 'TrafficShaping|QuotaReserve|CreditExhausted|CreditPark|CreditResetDay|CodexOverload|LegacyCodexModel|ClaudeQuota|ChainedCPAPoolCooldown|Issue7017TrustedRetryAfter'
+          -count=1
       - name: Build
         run: |
           go build -o test-output ./cmd/server

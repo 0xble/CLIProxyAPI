@@ -204,6 +204,9 @@ type Manager struct {
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
+	trafficPickMu             sync.Mutex
+	trafficMu                 sync.Mutex
+	traffic                   trafficShapingState
 	configCooldownMu          sync.Mutex
 	syncSchedulerMu           sync.Mutex
 	// executionSeq stamps upstream dispatches with a monotonic sequence used

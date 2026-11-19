@@ -830,6 +830,9 @@ func (m *Manager) RemoveIf(ctx context.Context, id string, predicate func(*Auth)
 	}
 	provider := strings.TrimSpace(existing.Provider)
 	delete(m.auths, id)
+	m.trafficMu.Lock()
+	delete(m.traffic.accounts, id)
+	m.trafficMu.Unlock()
 	m.notifyAuthChangeLocked(id)
 	if m.modelPoolOffsets != nil {
 		delete(m.modelPoolOffsets, id)
