@@ -1,20 +1,20 @@
 # Maintenance
 
-## Current candidate: v8.0.76
+## Current candidate: v8.0.78
 
-Upstream releases `v8.0.75` (`c19787b25262`) and `v8.0.76` (`7df56074b252`) are merged over fork main `0cdae2d2c630db78111aa0a25eba7bb9227b1fb0` (v8.0.74 plus CPA-011, #49). CPA-001 through CPA-011 and the management redaction contract are preserved.
+Upstream releases `v8.0.77` (`a5e8f69e5630`) and `v8.0.78` (`db7f177d6b0e`) are merged cleanly over fork main `66948be659dbfb448869c7e62e5df371ab23854a` (v8.0.76 plus CPA-001 through CPA-011, #50). CPA-001 through CPA-011 and the management redaction contract are preserved. No conflicts.
 
-Upstream changes reviewed: user-text replacement payload rules enforced as a final executor barrier, bio/safety policy blocks classified as 400 request faults, nested and inferred Retry-After headers preserved on Codex overload and websocket errors, string and untyped Codex failures recognized, a bounded Codex scheduler continuity hook for plugins, Claude expired refresh tokens treated as terminal, `thread_not_found` when a pinned Claude thread owner is unavailable, non-refreshing auths with a past next check backed off, and moego upgraded to v0.1.0-alpha.4.
+Post-merge repair: upstream's own `TestModelsWithClientVersionReturnsCodexCatalog` fails on the v8.0.77 tag, because `a5e8f69e` refreshed `codex_client_models.json` from Codex CLI 0.169.0 and gpt-5.5 no longer offers the priority service tier, while the test still expects one. The test now takes the expected tiers from the catalog template, backported unchanged from open upstream PR router-for-me/CLIProxyAPI#7646. Drop this note once a release contains that PR.
 
-Conflicts, both in v8.0.76:
+v8.0.78 changes reviewed: Codex session instructions managed across requests (new `PrepareCodexSessionInstructions` in the HTTP and websocket stream executors), Gemini 4 Neon XHigh registry entry, Interactions system instructions sent to Codex as developer messages, an explicit plugin `ResponseInterceptRequest.Kind`, a configurable Claude OAuth `org:create_api_key` scope, v8 migration warnings only when persisted, streamed Interactions function-argument reassembly, non-string Gemini tool schema types kept for Claude, and Claude OAuth refresh deferred during macOS maintenance wakes.
 
-- `sdk/cliproxy/auth/conductor_cooldown.go` (`isTerminalRefreshGrantMessage`): upstream added the same `"refresh token expired"` terminal match as fork commit `dd427f9d`. Upstream's line, with its comment, is kept. The fork change is now upstream.
-- `internal/pluginhost/rpc_client_error_test.go`: upstream raised the expected model cooldown from the plugin's 7s hint to the manager's 10s quota floor. The fork's exact recorded-deadline Retry-After assertion (from upstream `4da9f685`'s pool cooldown) is kept with the 10s floor.
+v8.0.77 changes reviewed: GPT-6.2 Codex models and a Codex CLI version bump, payload replace rules with regex, path targets, and system/developer roles, Claude and Responses translators relaying PDF, document, and media content in tool results, nested `input_audio` for OpenAI Chat to Codex, local errors separated from upstream responses in logs, and plugin executor usage attribution with cache-write TTL token counts.
 
 Patch review:
 
-- CPA-011's `bindableAuths` and CPA-007's `isQuotaReserveExcluded` are untouched by the merge. Upstream's selector and scheduler changes do not touch the tier-locked or reserve paths.
-- CPA-010's credit-exhaustion classification still runs ahead of upstream's new string and untyped Codex failure recognition in `codex_executor_terminal.go`.
+- v8.0.78 touches `codex_executor_stream.go` and `codex_websockets_stream.go`, which carry CPA-010 credit-exhausted failover. The merge is clean and the hunks only add session-instruction preparation, final-body checks, and log-body redaction. In the websocket executor they move stream preparation after session acquisition. The CPA-010 hooks (`isCodexCreditExhaustedError`, `failoverPending`, bootstrap buffering) are unchanged in count and position.
+- v8.0.78 adds the boolean `oauth.providers.claude.oauth-include-create-api-key`. The fork's v8 management redaction (`redactReadOnlyYAMLNode`) masked any scalar whose key ends in `-api-key`, so it rewrote that boolean to `***` under a `!!bool` tag and the JSON field read returned 500 `decode_failed` (upstream `TestConfigV8ClaudeOAuthIncludeCreateAPIKey`). Booleans and nulls are now exempt from masking. Every other scalar, including bare numbers that the typed config reads as string credentials, is still masked and retagged `!!str` so the redacted node stays decodable. `TestRedactReadOnlyYAMLNodeScalarTypes` pins the boolean, bare-numeric header, and numeric list cases.
+- v8.0.77 touches none of the fork-patched surfaces: `selector.go`, `scheduler.go`, `quota_reserve.go`, `conductor_cooldown.go`, `synthesizer/file.go`, and the Codex terminal, stream, and websocket executors are unchanged from v8.0.76.
 
 Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
@@ -29,7 +29,9 @@ disabled on the fork for that reason.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
 Accepted upstream baseline before CPA-001: `d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5` (`v8.0.23`).
-Source candidate upstream release: `7df56074b252` (`v8.0.76`), merged with `v8.0.75` over fork main `0cdae2d2c630db78111aa0a25eba7bb9227b1fb0` (`v8.0.74` plus CPA-011) after reviewing the official release notes. Two conflicts resolved: upstream now carries the fork's expired-refresh-token terminal match, and the plugin Retry-After test keeps the fork's exact-deadline assertion with upstream's 10s floor. CPA-001 through CPA-011 are retained.
+Source candidate upstream release: `db7f177d6b0e` (`v8.0.78`), with `a5e8f69e5630` (`v8.0.77`), merged cleanly over fork main `66948be659dbfb448869c7e62e5df371ab23854a` (`v8.0.76` plus CPA-011) after reviewing the official release notes. v8.0.78 touches the CPA-010 Codex stream executors without conflict, and the patch review above records why the failover hooks are intact. CPA-001 through CPA-011 are retained.
+
+Prior candidate upstream release: `7df56074b252` (`v8.0.76`), merged with `v8.0.75` over fork main `0cdae2d2c630db78111aa0a25eba7bb9227b1fb0` (`v8.0.74` plus CPA-011) after reviewing the official release notes. Two conflicts resolved: upstream now carries the fork's expired-refresh-token terminal match, and the plugin Retry-After test keeps the fork's exact-deadline assertion with upstream's 10s floor. CPA-001 through CPA-011 are retained.
 
 Prior candidate upstream release: `14144df573c77e8e0e1eeaa450d3e63a068372df` (`v8.0.74`), merged over fork main `308848575c62941123e80360fd14d4c8bd0b0e7d` (the v8.0.73 tree, squash-merged) after reviewing the official release notes. It adds pre-commit Responses websocket failover, routes duplex quota errors through the replay guard, and swaps in moego JSON and regexp packages. CPA-001 through CPA-010 are retained.
 

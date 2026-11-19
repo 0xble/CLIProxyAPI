@@ -38,7 +38,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusPreconditionFailed, gin.H{"error": "precondition_failed"})
 		return
 	}
-	data, _, err := config.NormalizeConfigLayout(raw, true)
+	data, _, commentedSections, err := config.NormalizeConfigLayoutSilent(raw, true)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
@@ -148,6 +148,10 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		if c.Request.Method == http.MethodPatch {
 			mergeConfigV8Patch(dst, update.Content[0])
 		} else {
+			if len(parts) == 0 {
+				doc.HeadComment = update.HeadComment
+				doc.FootComment = update.FootComment
+			}
 			if dst.Kind == yaml.ScalarNode && update.Content[0].Kind == yaml.ScalarNode {
 				update.Content[0].HeadComment = dst.HeadComment
 				update.Content[0].LineComment = dst.LineComment
@@ -198,7 +202,8 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
-	data, _, err = config.NormalizeConfigLayout(data, true)
+	var finalCommented []config.ArchivedV8Section
+	data, _, finalCommented, err = config.NormalizeConfigLayoutSilent(data, true)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
@@ -210,6 +215,10 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": err.Error()})
 		return
 	}
+	// Emit migration warnings only after the migrated document is persisted
+	// and only for sections whose archived comment block is in the written document.
+	config.WarnUnrecognizedV8Sections(config.FilterArchivedV8Sections(data, commentedSections))
+	config.WarnUnrecognizedV8Sections(finalCommented)
 	// Runtime-only ownership state is never sourced from an uploaded YAML document.
 	next.Home = h.cfg.Home
 	// WriteConfig may normalize the bytes, so report the version actually on
@@ -252,16 +261,24 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 			// v8 "api-keys" is a provider mapping with safe routing metadata;
 			// recurse into it and let the per-entry credential leaves be removed.
 			v8ProviderGroups := normalizeReadOnlyKey(key.Value) == "api-keys" && value.Kind == yaml.MappingNode
-			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
+			// Booleans and nulls never hold credentials. Flags such as
+			// oauth-include-create-api-key share the "-api-key" suffix, and masking
+			// them would leave an undecodable "***" under a !!bool tag. Every other
+			// scalar is masked, including bare numbers, which the typed config
+			// still reads as string credentials.
+			maskable := isMaskableYAMLScalar(value)
+			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (maskable && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
 				if value.Kind == yaml.ScalarNode {
-					value.Value = maskManagementSecret(value.Value)
+					if maskable {
+						maskYAMLScalar(value)
+					}
 					index += 2
 					continue
 				}
 				if value.Kind == yaml.SequenceNode {
 					for _, item := range value.Content {
-						if item.Kind == yaml.ScalarNode {
-							item.Value = maskManagementSecret(item.Value)
+						if isMaskableYAMLScalar(item) {
+							maskYAMLScalar(item)
 						}
 					}
 					index += 2
@@ -286,6 +303,23 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 	for _, child := range node.Content {
 		redactReadOnlyYAMLNode(child)
 	}
+}
+
+// isMaskableYAMLScalar reports whether a scalar node may hold a credential.
+func isMaskableYAMLScalar(node *yaml.Node) bool {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return false
+	}
+	tag := node.ShortTag()
+	return tag != "!!bool" && tag != "!!null"
+}
+
+// maskYAMLScalar masks a credential scalar and retags it as a string, because
+// a mask under a numeric tag cannot be decoded.
+func maskYAMLScalar(node *yaml.Node) {
+	node.Value = maskManagementSecret(node.Value)
+	node.Tag = "!!str"
+	node.Style = 0
 }
 
 // configV8ETag renders a config source hash as a strong ETag.
