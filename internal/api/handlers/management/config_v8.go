@@ -261,8 +261,13 @@ func redactReadOnlyYAMLNode(node *yaml.Node) {
 			// v8 "api-keys" is a provider mapping with safe routing metadata;
 			// recurse into it and let the per-entry credential leaves be removed.
 			v8ProviderGroups := normalizeReadOnlyKey(key.Value) == "api-keys" && value.Kind == yaml.MappingNode
-			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (value.Kind == yaml.ScalarNode && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
-				if value.Kind == yaml.ScalarNode {
+			// Only string scalars hold credentials. Booleans such as
+			// oauth-include-create-api-key share the "-api-key" suffix, and masking
+			// them would leave an undecodable "***" under a !!bool tag. This
+			// matches redactReadOnlyConfig, which only masks string values.
+			stringScalar := value.Kind == yaml.ScalarNode && value.ShortTag() == "!!str"
+			if (!v8ProviderGroups && isReadOnlySecretKey(key.Value)) || (stringScalar && isReadOnlySecretScalarKey(key.Value)) || (hasCredential && isReadOnlyUsernameKey(key.Value)) {
+				if stringScalar {
 					value.Value = maskManagementSecret(value.Value)
 					index += 2
 					continue
