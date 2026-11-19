@@ -1893,6 +1893,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							if !disableCooling {
 								reusedOpenWindow := false
 								var baseBackoffBefore int
+								backoffBase := quotaBackoffBase
 								if result.RetryAfter != nil {
 									cooldown := *result.RetryAfter
 									if cooldown < minQuotaCooldownFloor {
@@ -1911,7 +1912,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									}
 									reusedOpenWindow = quotaForFailure.NextRecoverAt.After(now)
 									baseBackoffBefore = quotaForFailure.BackoffLevel
-									next, backoffLevel = quotaCooldownAfterFailure(quotaForFailure, now)
+									backoffBase = quotaBackoffForResponse(auth.Provider, responseHeaders)
+									next, backoffLevel = quotaCooldownAfterFailure(quotaForFailure, now, backoffBase)
 								}
 								credentialNext = next
 								if isForceResult {
@@ -1921,12 +1923,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 										if auth.credQuotaForceUntil.After(now) {
 											ownModelForceDeadline = auth.credQuotaForceUntil
 										} else {
-											ownModelForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseBackoffBefore}, now)
+											ownModelForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseBackoffBefore}, now, backoffBase)
 										}
 									} else if prevModelForceUntil.After(now) {
 										ownModelForceDeadline = prevModelForceUntil
 									} else {
-										ownModelForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseBackoffBefore}, now)
+										ownModelForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseBackoffBefore}, now, backoffBase)
 									}
 								}
 								if prevStateQuotaActive && (prevStateRecoverAt.After(next) || (!result.CredentialScope && result.RetryAfter == nil)) {
@@ -2223,7 +2225,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							}
 						}
 					}
-					ownAuthForceDeadline, ownAuthRetryDeadline := applyAuthFailureState(auth, result.Error, result.RetryAfter, result.Cooldown, now, disableCooling)
+					ownAuthForceDeadline, ownAuthRetryDeadline := applyAuthFailureState(auth, result.Error, result.RetryAfter, result.Cooldown, now, disableCooling, responseHeaders)
 					cooldownSeq := m.currentExecutionSeq()
 					isQuota429 := !disableCooling &&
 						statusCodeFromResult(result.Error) == 429 &&
@@ -4286,7 +4288,7 @@ func isRequestInvalidError(err error) bool {
 	return false
 }
 
-func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, cooldown time.Duration, now time.Time, disableCooling bool) (time.Time, time.Time) {
+func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, cooldown time.Duration, now time.Time, disableCooling bool, responseHeaders ...http.Header) (time.Time, time.Time) {
 	if auth == nil {
 		return time.Time{}, time.Time{}
 	}
@@ -4424,14 +4426,15 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 				} else {
 					reusedOpenAuthWindow := auth.Quota.NextRecoverAt.After(now)
 					baseAuthBackoff := auth.Quota.BackoffLevel
-					next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
+					backoffBase := quotaBackoffForResponse(auth.Provider, responseHeaders...)
+					next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now, backoffBase)
 					if isForceAuth {
 						if !reusedOpenAuthWindow {
 							ownAuthForceDeadline = next
 						} else if prevAuthForceUntil.After(now) {
 							ownAuthForceDeadline = prevAuthForceUntil
 						} else {
-							ownAuthForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseAuthBackoff}, now)
+							ownAuthForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseAuthBackoff}, now, backoffBase)
 						}
 					}
 				}
@@ -4544,14 +4547,39 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	return ownAuthForceDeadline, ownAuthRetryDeadline
 }
 
-// quotaCooldownAfterFailure returns the recovery deadline and backoff level for
-// a quota failure observed at now. Failures that land while a previous quota
-// window is still open reuse that window instead of escalating, so a burst of
-// concurrent in-flight failures advances the backoff ladder at most once per
-// window.
-func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int) {
+// Quota rejections backed by Claude window signals but without a usable reset
+// become eligible for normal traffic after 15 minutes, then 30 on another
+// rejection. This never schedules an inference or changes an explicit reset.
+func quotaBackoffForResponse(provider string, headers ...http.Header) time.Duration {
+	if len(headers) == 0 {
+		return quotaBackoffBase
+	}
+	signals := rejectedClaudeSignalsForCooldown(provider, headers[0])
+	switch {
+	case strings.EqualFold(signals["Anthropic-Ratelimit-Unified-5h-Status"], "rejected"),
+		strings.EqualFold(signals["Anthropic-Ratelimit-Unified-7d-Status"], "rejected"):
+		return 15 * time.Minute
+	case !strings.EqualFold(signals["Anthropic-Ratelimit-Unified-Status"], "rejected"),
+		strings.EqualFold(signals["Anthropic-Ratelimit-Unified-7d_oi-Status"], "rejected"),
+		strings.Contains(strings.ToLower(signals["Anthropic-Ratelimit-Unified-Representative-Claim"]), "overage"):
+		// Don't slow the existing backoff for model-only overage/Fable refusals.
+		return quotaBackoffBase
+	default:
+		return 15 * time.Minute
+	}
+}
+
+// quotaCooldownAfterFailure reuses a live quota window. Concurrent in-flight
+// failures therefore advance the backoff ladder at most once per window.
+func quotaCooldownAfterFailure(quota QuotaState, now time.Time, base time.Duration) (time.Time, int) {
 	if quota.NextRecoverAt.After(now) {
 		return quota.NextRecoverAt, quota.BackoffLevel
+	}
+	if base > quotaBackoffBase {
+		if quota.BackoffLevel > 0 {
+			return now.Add(quotaBackoffMax).Round(0), quota.BackoffLevel
+		}
+		return now.Add(base).Round(0), 1
 	}
 	cooldown, nextLevel := nextQuotaCooldown(quota.BackoffLevel, false)
 	var next time.Time
