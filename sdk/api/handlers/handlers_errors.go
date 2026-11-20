@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"golang.org/x/net/context"
 )
@@ -113,6 +114,19 @@ func enrichAuthSelectionError(err error, providers []string, model string) error
 	return enriched
 }
 
+// WriteSafeRetryAfter writes locally validated retry advice and labels 429
+// advice for another CPA hop, even when no credential was selected locally.
+func WriteSafeRetryAfter(dst http.Header, status int, err error) string {
+	value := coreauth.SafeResponseHeaders(err).Get("Retry-After")
+	if value != "" {
+		dst.Set("Retry-After", value)
+		if status == http.StatusTooManyRequests {
+			dst.Set(logging.CPARetryAdviceHeader, "1")
+		}
+	}
+	return value
+}
+
 // WriteErrorResponse writes an error message to the response writer using the HTTP status embedded in the message.
 func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.ErrorMessage) {
 	status := http.StatusInternalServerError
@@ -124,9 +138,7 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 		return
 	}
 	if msg != nil && msg.Error != nil {
-		for _, value := range coreauth.SafeResponseHeaders(msg.Error).Values("Retry-After") {
-			c.Writer.Header().Add("Retry-After", value)
-		}
+		WriteSafeRetryAfter(c.Writer.Header(), status, msg.Error)
 	}
 	if msg != nil && msg.Addon != nil && PassthroughHeadersEnabled(h.CurrentConfig()) {
 		for key, values := range msg.Addon {

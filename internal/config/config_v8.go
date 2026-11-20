@@ -1099,5 +1099,8 @@ func ValidateV8Config(data []byte) error {
 	if errDecode := decoder.Decode(&cfg); errDecode != nil {
 		return errDecode
 	}
+	if errValidate := (*Config)(&cfg).ValidateCodexCreditResetDays(); errValidate != nil {
+		return errValidate
+	}
 	return cfg.Models.Validate()
 }

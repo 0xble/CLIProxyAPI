@@ -873,6 +873,12 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 	}
 
 	availableByPriority := make(map[int][]*Auth)
+	var traffic *trafficPick
+	if ctx != nil {
+		traffic, _ = ctx.Value(trafficPickKey{}).(*trafficPick)
+	}
+	var hardAvailable []*Auth
+	var trafficRechecks map[int]time.Time
 	cooldownCount := 0
 	unauthorizedCount := 0
 	var earliest time.Time
@@ -880,6 +886,10 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
 		blocked, reason, next := isAuthBlockedForModelForRequest(ctx, candidate, checkModel, now, clientHeaders...)
 		if !blocked {
+			if traffic != nil {
+				hardAvailable = append(hardAvailable, candidate)
+				continue
+			}
 			priority := authPriority(candidate)
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
 			continue
@@ -887,14 +897,46 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 		if reason == blockReasonCooldown {
 			cooldownCount++
 		}
-		if reason != blockReasonDisabled && next.After(now) && (earliest.IsZero() || next.Before(earliest)) {
-			earliest = next
+		if reason != blockReasonDisabled && next.After(now) {
+			if earliest.IsZero() || next.Before(earliest) {
+				earliest = next
+			}
+			// A soft deferral only arises while a subscription credential is
+			// hard-available, and paid keys never take soft-shaped traffic, so a
+			// paid key's recovery must not shorten the deferral's Retry-After.
+			if traffic != nil && !isAPIKeyAuth(candidate) {
+				if trafficRechecks == nil {
+					trafficRechecks = make(map[int]time.Time)
+				}
+				priority := authPriority(candidate)
+				if old := trafficRechecks[priority]; old.IsZero() || next.Before(old) {
+					trafficRechecks[priority] = next
+				}
+			}
 		}
 		if hasUnauthorizedAuthFailure(candidate) {
 			unauthorizedCount++
 		}
 	}
 
+	if len(hardAvailable) > 0 {
+		shaped, err := m.shapeTraffic(ctx, traffic, hardAvailable, routeModel)
+		if err != nil {
+			if deferred, ok := err.(*trafficDeferred); ok && !deferred.bound {
+				priority := authPriority(highestPriorityAuths(hardAvailable)[0])
+				for tier, next := range trafficRechecks {
+					if tier >= priority && next.After(traffic.now) && next.Before(deferred.until) {
+						deferred.until = next
+					}
+				}
+			}
+			return nil, err
+		}
+		for _, auth := range shaped {
+			priority := authPriority(auth)
+			availableByPriority[priority] = append(availableByPriority[priority], auth)
+		}
+	}
 	if len(availableByPriority) == 0 {
 		lastCandidateErr := latestCandidateErrorForModel(auths, func(candidate *Auth) string {
 			return m.selectionModelForAuth(candidate, routeModel)
@@ -2873,7 +2915,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	)
 	if len(candidates) > 0 {
 		available, selectorAuths, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, now, schedulerAcross, opts.Headers)
-		if errAvailable != nil && !canInspectUnavailableAffinity {
+		if errAvailable != nil && (!canInspectUnavailableAffinity || isRequestStopError(errAvailable)) {
 			m.mu.RUnlock()
 			m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
 			return nil, nil, "", errAvailable
@@ -2881,7 +2923,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	var accountingAuths []*Auth
 	if trackPinnedAccounting && len(candidates) > 0 && errAvailable == nil {
-		fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
+		fullAvailable, _, errAccounting := m.availableAuthsForSelector(context.WithValue(ctx, trafficPickKey{}, (*trafficPick)(nil)), selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
 		if errAccounting != nil {
 			m.mu.RUnlock()
 			return nil, nil, "", errAccounting
@@ -2914,7 +2956,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 				return nil, nil, "", errAvailable
 			}
 			if trackPinnedAccounting {
-				fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
+				fullAvailable, _, errAccounting := m.availableAuthsForSelector(context.WithValue(ctx, trafficPickKey{}, (*trafficPick)(nil)), selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
 				if errAccounting != nil {
 					m.mu.RUnlock()
 					return nil, nil, "", errAccounting
@@ -3292,7 +3334,12 @@ func (m *Manager) annotatePoolCooldownTerminalErrorAt(ctx context.Context, provi
 	if !ok {
 		return lastErr
 	}
-	return &poolCooldownTerminalError{cause: lastErr, deadline: deadline}
+	var chainedRetryAt time.Time
+	var trusted *trustedRetryAfterError
+	if errors.As(lastErr, &trusted) && trusted != nil {
+		chainedRetryAt = trusted.chainedRetryAt
+	}
+	return &poolCooldownTerminalError{cause: lastErr, deadline: deadline, chainedRetryAt: chainedRetryAt}
 }
 
 func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, err error) {

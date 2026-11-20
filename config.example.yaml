@@ -835,6 +835,10 @@ upstream:
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #           # connection-pool:                # optional: per-key override of the group pool setting
 #           #   enabled: false                # opt this key out while the group stays pooled
+#           # Park this key across all models on explicit credit exhaustion until 00:00 UTC
+#           # on this day of the month (or the last day of a shorter month). Omit to disable.
+#           # Enable routing.cooldown.save-cooldown-status to retain an active park across restarts.
+#           # credit-reset-day: 1
 #           disable-codex-cloaking: false # optional: true disables cloaking; OAuth provider settings do not apply here
 #           alpha-search: false # optional: allow this key to serve /v1/alpha/search via base-url + /alpha/search
 #           websockets: false # optional: use the Codex upstream WebSocket transport

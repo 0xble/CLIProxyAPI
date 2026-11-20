@@ -379,7 +379,7 @@ func TestIssue7600CodexSSEBootstrapConflictingHeadersPreservesTopLevelRetryAfter
 	assertIssue7600RetryAfter(t, err, 326*time.Second)
 }
 
-func TestIssue7600ManagerAppliesNestedOverloadCooldownInsteadOf60sFallback(t *testing.T) {
+func TestIssue7600ManagerCapsCapturedOverloadCooldown(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
@@ -453,7 +453,7 @@ func TestIssue7600ManagerAppliesNestedOverloadCooldownInsteadOf60sFallback(t *te
 	if state == nil || !state.Unavailable {
 		t.Fatalf("expected model state to enter cooldown, got %+v", state)
 	}
-	if state.NextRetryAfter.Before(before.Add(300*time.Second)) || state.NextRetryAfter.After(before.Add(350*time.Second)) {
-		t.Fatalf("NextRetryAfter = %v (remaining %v), want ~326s from %v (must not fall back to 60s)", state.NextRetryAfter, state.NextRetryAfter.Sub(before), before)
+	if after := time.Now(); state.NextRetryAfter.Before(before.Add(30*time.Second)) || state.NextRetryAfter.After(after.Add(30*time.Second)) {
+		t.Fatalf("NextRetryAfter = %v (remaining %v), want capped 30s cooldown", state.NextRetryAfter, state.NextRetryAfter.Sub(before))
 	}
 }

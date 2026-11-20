@@ -132,7 +132,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	if pagination.enabled {
 		matching := make([]*coreauth.Auth, 0, len(auths))
 		for _, auth := range auths {
-			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) || !isAuthFileListable(auth) {
+			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) || !isAuthFileListable(auth, quota.v8) {
 				continue
 			}
 			matching = append(matching, auth)
@@ -264,7 +264,7 @@ func compareAuthFileListOrder(left, right *coreauth.Auth) int {
 	return strings.Compare(leftIndex, rightIndex)
 }
 
-func isAuthFileListable(auth *coreauth.Auth) bool {
+func isAuthFileListable(auth *coreauth.Auth, v8 bool) bool {
 	if auth == nil {
 		return false
 	}
@@ -274,7 +274,7 @@ func isAuthFileListable(auth *coreauth.Auth) bool {
 	}
 	path := strings.TrimSpace(authAttribute(auth, "path"))
 	if path == "" {
-		return runtimeOnly
+		return runtimeOnly || v8 && auth.CodexCreditResetDay() > 0
 	}
 	if _, errStat := os.Stat(path); os.IsNotExist(errStat) && !runtimeOnly &&
 		(auth.Disabled || auth.Status == coreauth.StatusDisabled || strings.EqualFold(strings.TrimSpace(auth.StatusMessage), "removed via management api")) {
@@ -661,7 +661,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		return nil
 	}
 	path := strings.TrimSpace(authAttribute(auth, "path"))
-	if path == "" && !runtimeOnly {
+	if path == "" && !runtimeOnly && !(quota.v8 && auth.CodexCreditResetDay() > 0) {
 		return nil
 	}
 	name := strings.TrimSpace(auth.FileName)
@@ -812,6 +812,14 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 			entry["oauth_provider"] = oauthProvider
 		}
 		nowUTC := time.Now().UTC()
+		if day := auth.CodexCreditResetDay(); day > 0 {
+			entry["credit_reset_day"] = day
+			if until := auth.CodexCreditParkedUntil(nowUTC); !until.IsZero() && (h.authManager == nil || !h.authManager.HomeEnabled()) {
+				entry["credit_parked_until"] = until
+				entry["credit_park_reason"] = coreauth.CodexCreditParkReason
+				entry["unavailable"] = true
+			}
+		}
 		if exp, okExp := auth.AccessTokenExpirationTime(); okExp && !exp.IsZero() && exp.Unix() > 0 {
 			entry["access_token_expires_at"] = exp.UTC().Format(time.RFC3339)
 		}

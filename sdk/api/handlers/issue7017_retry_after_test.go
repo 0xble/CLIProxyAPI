@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -41,6 +42,9 @@ func TestIssue7017TrustedRetryAfterWinsOverPassthroughAddon(t *testing.T) {
 	if got := recorder.Header().Get("Retry-After"); got != "256" {
 		t.Fatalf("trusted Retry-After must win over passthrough, got %q want 256", got)
 	}
+	if got := recorder.Header().Get(logging.CPARetryAdviceHeader); got != "1" {
+		t.Fatalf("locally generated advice marker = %q, want 1", got)
+	}
 	if got := recorder.Header().Get("X-Request-Id"); got != "req-1" {
 		t.Fatalf("other passthrough headers must still apply, got %q", got)
 	}
@@ -52,9 +56,12 @@ func TestIssue7017TrustedRetryAfterWinsOverPassthroughAddon(t *testing.T) {
 	handler.WriteErrorResponse(cPlain, &interfaces.ErrorMessage{
 		StatusCode: http.StatusTooManyRequests,
 		Error:      errors.New("rate limit"),
-		Addon:      http.Header{"Retry-After": {"30"}},
+		Addon:      http.Header{"Retry-After": {"30"}, logging.CPARetryAdviceHeader: {"1"}},
 	})
 	if got := recorderPlain.Header().Get("Retry-After"); got != "30" {
 		t.Fatalf("passthrough Retry-After without trusted deadline = %q, want 30", got)
+	}
+	if got := recorderPlain.Header().Get(logging.CPARetryAdviceHeader); got != "" {
+		t.Fatalf("passthrough emitted a forged advice marker: %q", got)
 	}
 }

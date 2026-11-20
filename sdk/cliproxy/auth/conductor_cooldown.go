@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
 	"github.com/MoeForge/moego/regexp"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
@@ -24,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -135,6 +137,26 @@ func recoverableFailureRetryAfterWithHint(now time.Time, retryAfter *time.Durati
 		return now.Add(transientErrorCooldown)
 	}
 	return now.Add(time.Duration(seconds) * time.Second)
+}
+
+const codexOverloadCooldownCap = 30 * time.Second
+
+// Keep the original Retry-After on the upstream error; cap only CPA's local
+// cooldown for the explicit Codex overload signal, not rate limits or generic 5xx.
+func upstreamFailureRetryAfter(auth *Auth, err *Error, now time.Time, retryAfter *time.Duration, disableCooling bool) time.Time {
+	deadline := recoverableFailureRetryAfterWithHint(now, retryAfter, disableCooling)
+	capAt := now.Add(codexOverloadCooldownCap)
+	if !deadline.After(capAt) || auth == nil || executorKeyFromAuth(auth) != "codex" || err == nil || isForceCooldownError(err) {
+		return deadline
+	}
+	if err.HTTPStatus != http.StatusBadGateway && err.HTTPStatus != http.StatusServiceUnavailable {
+		return deadline
+	}
+	const overload = "server_is_overloaded"
+	if err.Code == overload || ojson.Get(err.Message, "error.code").String() == overload || ojson.Get(err.Message, "code").String() == overload {
+		return capAt
+	}
+	return deadline
 }
 
 // SetConfig updates the runtime config snapshot used by request-time helpers.
@@ -375,18 +397,32 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 			m.scheduler.upsertAuth(snapshot)
 		}
 	}
+	for _, snapshot := range snapshotsByID {
+		if snapshot.CodexCreditParkedUntil(now).After(now) {
+			m.projectAuthModels(snapshot, now)
+		}
+	}
 	m.persistCooldownStates(context.Background())
 	return nil
 }
 
 func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now time.Time) bool {
 	authID := strings.TrimSpace(record.AuthID)
-	if authID == "" || record.NextRetryAfter.IsZero() || !record.NextRetryAfter.After(now) {
+	auth := m.auths[authID]
+	if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 		return false
 	}
-	auth := m.auths[authID]
-	if auth == nil || auth.Disabled || auth.Status == StatusDisabled || (m.cooldownDisabledForAuth(auth) && !isForceCooldownRecordAt(record, now)) || hasUnauthorizedAuthFailure(auth) {
-		return false
+	parkRestored := false
+	if park := record.CreditPark; record.Model == "" && park != nil && park.ResetDay > 0 && auth.CodexCreditResetDay() == park.ResetDay &&
+		park.Grant == AuthGrantFingerprint(auth) &&
+		!park.ObservedAt.IsZero() && !park.ObservedAt.After(now) && park.ObservedAt.After(auth.creditPark.ObservedAt) &&
+		park.Until.After(now) && park.Until.Equal(nextCreditReset(park.ObservedAt, park.ResetDay)) {
+		auth.creditPark = *park
+		auth.Generation++
+		parkRestored = true
+	}
+	if !record.NextRetryAfter.After(now) || (m.cooldownDisabledForAuth(auth) && !isForceCooldownRecordAt(record, now)) || hasUnauthorizedAuthFailure(auth) {
+		return parkRestored
 	}
 	updatedAt := record.UpdatedAt
 	if updatedAt.IsZero() {
@@ -1267,7 +1303,21 @@ func (m *Manager) cooldownStateRecordsForAuthLocked(auth *Auth, now time.Time) [
 	}
 	coolingDisabled := m.cooldownDisabledForAuth(auth)
 	records := make([]CooldownStateRecord, 0, 1+len(auth.ModelStates))
-	if record, ok := authCooldownStateRecord(auth, now); ok && (!coolingDisabled || isForceCooldownRecordAt(record, now)) {
+	record, regular := authCooldownStateRecord(auth, now)
+	regular = regular && (!coolingDisabled || isForceCooldownRecordAt(record, now))
+	if auth.CodexCreditParkedUntil(now).After(now) {
+		if !regular {
+			record = CooldownStateRecord{Provider: auth.Provider, AuthID: auth.ID, AuthFile: cooldownAuthFile(auth), UpdatedAt: auth.creditPark.ObservedAt}
+		}
+		park := auth.creditPark
+		record.CreditPark = &park
+		// Keep a stable timestamp for park-only records across unrelated results.
+		if park.ObservedAt.After(record.UpdatedAt) {
+			record.UpdatedAt = park.ObservedAt
+		}
+		regular = true
+	}
+	if regular {
 		records = append(records, record)
 	}
 	for model, state := range auth.ModelStates {
@@ -1294,7 +1344,7 @@ func cooldownStateRecordsEqual(a, b []CooldownStateRecord) bool {
 }
 
 func cooldownStateRecordEqual(a, b CooldownStateRecord) bool {
-	if a.CredentialQuotaPropagated != b.CredentialQuotaPropagated {
+	if !equalCreditPark(a.CreditPark, b.CreditPark) || a.CredentialQuotaPropagated != b.CredentialQuotaPropagated {
 		return false
 	}
 	if a.Provider != b.Provider ||
@@ -1567,6 +1617,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth
+	var parked, parkStarted bool
 	cooldownStateChanged := false
 	scheduleUnauthorizedRefresh := false
 	now := time.Now()
@@ -1620,6 +1671,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			auth.Failed++
 		}
 		wasTerminalUnauthorized := hasUnauthorizedAuthFailure(auth)
+		if !wasTerminalUnauthorized {
+			parked, parkStarted = auth.parkOnCreditExhaustion(result, now)
+		}
+		if parked {
+			result.CredentialScope = true
+		}
 
 		// retainModelCooldown pins a still-live model cooldown against a success
 		// from an execution dispatched before that cooldown was recorded. Such a
@@ -1669,7 +1726,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			} else if !auth.Disabled {
 				clearAuthStateOnSuccess(auth, now)
 			}
-		} else {
+		} else if !parked {
 			if modelKey != "" {
 				if auth.Disabled || auth.Status == StatusDisabled {
 					// A disabled credential (operator action or terminal TOS) is
@@ -1837,6 +1894,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							if !disableCooling {
 								reusedOpenWindow := false
 								var baseBackoffBefore int
+								backoffBase := quotaBackoffBase
 								if result.RetryAfter != nil {
 									cooldown := *result.RetryAfter
 									if cooldown < minQuotaCooldownFloor {
@@ -1855,7 +1913,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									}
 									reusedOpenWindow = quotaForFailure.NextRecoverAt.After(now)
 									baseBackoffBefore = quotaForFailure.BackoffLevel
-									next, backoffLevel = quotaCooldownAfterFailure(quotaForFailure, now)
+									backoffBase = quotaBackoffForResponse(auth.Provider, responseHeaders)
+									next, backoffLevel = quotaCooldownAfterFailure(quotaForFailure, now, backoffBase)
 								}
 								credentialNext = next
 								if isForceResult {
@@ -1865,12 +1924,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 										if auth.credQuotaForceUntil.After(now) {
 											ownModelForceDeadline = auth.credQuotaForceUntil
 										} else {
-											ownModelForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseBackoffBefore}, now)
+											ownModelForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseBackoffBefore}, now, backoffBase)
 										}
 									} else if prevModelForceUntil.After(now) {
 										ownModelForceDeadline = prevModelForceUntil
 									} else {
-										ownModelForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseBackoffBefore}, now)
+										ownModelForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseBackoffBefore}, now, backoffBase)
 									}
 								}
 								if prevStateQuotaActive && (prevStateRecoverAt.After(next) || (!result.CredentialScope && result.RetryAfter == nil)) {
@@ -1969,7 +2028,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								}
 							}
 						case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
-							state.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, result.RetryAfter, disableCooling)
+							state.NextRetryAfter = upstreamFailureRetryAfter(auth, result.Error, now, result.RetryAfter, disableCooling)
 							state.Unavailable = !state.NextRetryAfter.IsZero()
 						default:
 							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
@@ -2167,7 +2226,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							}
 						}
 					}
-					ownAuthForceDeadline, ownAuthRetryDeadline := applyAuthFailureState(auth, result.Error, result.RetryAfter, result.Cooldown, now, disableCooling)
+					ownAuthForceDeadline, ownAuthRetryDeadline := applyAuthFailureState(auth, result.Error, result.RetryAfter, result.Cooldown, now, disableCooling, responseHeaders)
 					cooldownSeq := m.currentExecutionSeq()
 					isQuota429 := !disableCooling &&
 						statusCodeFromResult(result.Error) == 429 &&
@@ -2293,8 +2352,21 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 
-	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
+	if parkStarted {
+		log.WithFields(log.Fields{"auth_id": result.AuthID, "reason": CodexCreditParkReason, "until": authSnapshot.creditPark.Until}).Info("Codex API key parked after credit exhaustion")
+	}
+	m.projectAuthModels(authSnapshot, now)
+	m.hook.OnResult(ctx, result)
+	m.publishErrorEvent(result, authSnapshot)
+	m.updateSessionAffinity(result)
+}
+
+func (m *Manager) projectAuthModels(authSnapshot *Auth, now time.Time) {
+	if authSnapshot == nil {
+		return
+	}
 	reg := registry.GetGlobalRegistry()
+	supportedModels, regEpoch := reg.GetModelsAndEpochForClient(authSnapshot.ID)
 	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
 	for _, sm := range supportedModels {
 		if sm == nil || strings.TrimSpace(sm.ID) == "" {
@@ -2302,13 +2374,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 		projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
 	}
-	if authSnapshot != nil && len(projections) > 0 {
-		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
+	if len(projections) > 0 {
+		reg.ApplyClientModelProjections(authSnapshot.ID, regEpoch, authSnapshot.Generation, projections)
 	}
-
-	m.hook.OnResult(ctx, result)
-	m.publishErrorEvent(result, authSnapshot)
-	m.updateSessionAffinity(result)
 }
 
 func (m *Manager) updateSessionAffinity(result Result) {
@@ -4221,7 +4289,7 @@ func isRequestInvalidError(err error) bool {
 	return false
 }
 
-func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, cooldown time.Duration, now time.Time, disableCooling bool) (time.Time, time.Time) {
+func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, cooldown time.Duration, now time.Time, disableCooling bool, responseHeaders ...http.Header) (time.Time, time.Time) {
 	if auth == nil {
 		return time.Time{}, time.Time{}
 	}
@@ -4359,14 +4427,15 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 				} else {
 					reusedOpenAuthWindow := auth.Quota.NextRecoverAt.After(now)
 					baseAuthBackoff := auth.Quota.BackoffLevel
-					next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
+					backoffBase := quotaBackoffForResponse(auth.Provider, responseHeaders...)
+					next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now, backoffBase)
 					if isForceAuth {
 						if !reusedOpenAuthWindow {
 							ownAuthForceDeadline = next
 						} else if prevAuthForceUntil.After(now) {
 							ownAuthForceDeadline = prevAuthForceUntil
 						} else {
-							ownAuthForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseAuthBackoff}, now)
+							ownAuthForceDeadline, _ = quotaCooldownAfterFailure(QuotaState{BackoffLevel: baseAuthBackoff}, now, backoffBase)
 						}
 					}
 				}
@@ -4378,7 +4447,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.NextRetryAfter = next
 		case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
 			auth.StatusMessage = "transient upstream error"
-			auth.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, retryAfter, disableCooling)
+			auth.NextRetryAfter = upstreamFailureRetryAfter(auth, resultErr, now, retryAfter, disableCooling)
 			auth.Unavailable = !auth.NextRetryAfter.IsZero()
 		default:
 			if auth.StatusMessage == "" {
@@ -4479,14 +4548,39 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	return ownAuthForceDeadline, ownAuthRetryDeadline
 }
 
-// quotaCooldownAfterFailure returns the recovery deadline and backoff level for
-// a quota failure observed at now. Failures that land while a previous quota
-// window is still open reuse that window instead of escalating, so a burst of
-// concurrent in-flight failures advances the backoff ladder at most once per
-// window.
-func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int) {
+// Quota rejections backed by Claude window signals but without a usable reset
+// become eligible for normal traffic after 15 minutes, then 30 on another
+// rejection. This never schedules an inference or changes an explicit reset.
+func quotaBackoffForResponse(provider string, headers ...http.Header) time.Duration {
+	if len(headers) == 0 {
+		return quotaBackoffBase
+	}
+	signals := rejectedClaudeSignalsForCooldown(provider, headers[0])
+	switch {
+	case strings.EqualFold(signals["Anthropic-Ratelimit-Unified-5h-Status"], "rejected"),
+		strings.EqualFold(signals["Anthropic-Ratelimit-Unified-7d-Status"], "rejected"):
+		return 15 * time.Minute
+	case !strings.EqualFold(signals["Anthropic-Ratelimit-Unified-Status"], "rejected"),
+		strings.EqualFold(signals["Anthropic-Ratelimit-Unified-7d_oi-Status"], "rejected"),
+		strings.Contains(strings.ToLower(signals["Anthropic-Ratelimit-Unified-Representative-Claim"]), "overage"):
+		// Don't slow the existing backoff for model-only overage/Fable refusals.
+		return quotaBackoffBase
+	default:
+		return 15 * time.Minute
+	}
+}
+
+// quotaCooldownAfterFailure reuses a live quota window. Concurrent in-flight
+// failures therefore advance the backoff ladder at most once per window.
+func quotaCooldownAfterFailure(quota QuotaState, now time.Time, base time.Duration) (time.Time, int) {
 	if quota.NextRecoverAt.After(now) {
 		return quota.NextRecoverAt, quota.BackoffLevel
+	}
+	if base > quotaBackoffBase {
+		if quota.BackoffLevel > 0 {
+			return now.Add(quotaBackoffMax).Round(0), quota.BackoffLevel
+		}
+		return now.Add(base).Round(0), 1
 	}
 	cooldown, nextLevel := nextQuotaCooldown(quota.BackoffLevel, false)
 	var next time.Time

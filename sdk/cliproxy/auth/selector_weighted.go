@@ -93,6 +93,7 @@ func (s *WeightedRoundRobinSelector) reserveForRequest(ctx context.Context, prov
 			return nil, nil, errAvailable
 		}
 		available = preferCodexWebsocketAuths(ctx, transportProvider, available)
+		available = weightedTrafficCandidates(ctx, available)
 		if cliproxyexecutor.DownstreamWebsocket(ctx) && transportProvider == "codex" && len(available) > 0 {
 			if authWebsocketsEnabled(available[0]) {
 				transportClass = "ws"

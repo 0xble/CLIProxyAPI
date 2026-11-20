@@ -16,6 +16,7 @@ import (
 const (
 	defaultClaudeRateLimitFuzzMinSeconds = 1
 	defaultClaudeRateLimitFuzzMaxSeconds = 30
+	maxClaudeFiveHourWindow              = 5*time.Hour + time.Hour
 	// maxClaudeRateLimitWindow is the longest Anthropic rate-limit window (7 days)
 	// plus a small clock-skew allowance. A later header timestamp is a billing
 	// boundary, not a recoverable rate limit.
@@ -274,7 +275,7 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 	// 2. 5-hour window reset (only when rejected)
 	if status5h == "rejected" {
 		if raw := getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-5h-Reset"); raw != "" {
-			if t, ok := parseUnixOrTimestamp(raw); ok && t.After(now) {
+			if t, ok := parseUnixOrTimestamp(raw); ok && t.After(now) && t.Sub(now) <= maxClaudeFiveHourWindow {
 				candidateDeadlines = append(candidateDeadlines, t)
 			}
 		}
@@ -311,7 +312,8 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 			// the overage reset, it is the billing-period boundary, not a rate-limit
 			// recovery time.
 			if !claudeUnifiedResetIsOverageBillingBoundary(headers, raw) {
-				if resetAt, ok := parseUnixOrTimestamp(raw); ok && resetAt.After(now) {
+				if resetAt, ok := parseUnixOrTimestamp(raw); ok && resetAt.After(now) &&
+					(resetAt.Sub(now) <= maxClaudeFiveHourWindow || claudeUnifiedResetHasWeeklyEvidence(headers, unifiedStatus, status7d, status7dOI)) {
 					candidateDeadlines = append(candidateDeadlines, resetAt)
 				}
 			}
@@ -360,6 +362,22 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 	}).Info("parsed Anthropic rate limit reset headers")
 
 	return &effectiveDuration
+}
+
+// A generic multi-day reset is not sufficient to establish exhaustion of a
+// weekly window. Require a rejected weekly window or an applicable claim.
+func claudeUnifiedResetHasWeeklyEvidence(headers http.Header, unifiedStatus, status7d, status7dOI string) bool {
+	claim := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-Representative-Claim")))
+	switch claim {
+	case "seven_day":
+		return status7d == "rejected" || (status7d == "" && unifiedStatus == "rejected")
+	case "seven_day_overage_included":
+		return status7dOI == "rejected" || (status7dOI == "" && unifiedStatus == "rejected")
+	case "":
+		return status7d == "rejected" || status7dOI == "rejected"
+	default:
+		return false
+	}
 }
 
 func claudeUnifiedResetIsOverageBillingBoundary(headers http.Header, unifiedReset string) bool {

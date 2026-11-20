@@ -93,7 +93,8 @@ type Auth struct {
 	// Metadata stores runtime mutable provider state (e.g. tokens, cookies).
 	Metadata map[string]any `json:"metadata,omitempty"`
 	// Quota captures recent quota information for load balancers.
-	Quota QuotaState `json:"quota"`
+	Quota      QuotaState `json:"quota"`
+	creditPark creditParkState
 	// LastError stores the last failure encountered while executing or refreshing.
 	LastError *Error `json:"last_error,omitempty"`
 	// CreatedAt is the creation timestamp in UTC.

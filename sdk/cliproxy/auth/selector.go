@@ -1079,6 +1079,7 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	available = weightedTrafficCandidates(ctx, available)
 	key := provider + ":" + canonicalModelLookupKey(model)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1239,6 +1240,7 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	available = weightedTrafficCandidates(ctx, available)
 	return available[0], nil
 }
 
@@ -1253,6 +1255,14 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 }
 
 func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model string, now time.Time, clientHeaders ...http.Header) (bool, blockReason, time.Time) {
+	blocked, reason, next := authAvailabilityForRequest(ctx, auth, model, now, clientHeaders...)
+	if until := auth.CodexCreditParkedUntil(now); !until.IsZero() && (!blocked || !next.IsZero() && until.After(next)) {
+		return true, blockReasonCooldown, until
+	}
+	return blocked, reason, next
+}
+
+func authAvailabilityForRequest(ctx context.Context, auth *Auth, model string, now time.Time, clientHeaders ...http.Header) (bool, blockReason, time.Time) {
 	if auth == nil {
 		return true, blockReasonOther, time.Time{}
 	}
@@ -1311,7 +1321,7 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 	}
 	// CPA-007 reserve exclusion and the credential-wide retry deadline block
 	// independently; when both apply, recheck at the later of the two.
-	reserveExcluded, reserveRecheckAt := isQuotaReserveExcluded(auth, now)
+	reserveExcluded, reserveRecheckAt := isLegacyReserveExcludedForRequest(ctx, auth, now)
 	if !auth.credentialRetryAfter.IsZero() && auth.credentialRetryAfter.After(now) {
 		credNext := auth.credentialRetryAfter
 		if model != "" && len(auth.ModelStates) > 0 {
@@ -1503,7 +1513,7 @@ func isAuthBlockedByQuotaOrAuthForModelForRequest(ctx context.Context, auth *Aut
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && (auth.Quota.NextRecoverAt.IsZero() || auth.Quota.NextRecoverAt.After(now)) {
 		return true
 	}
-	if excluded, _ := isQuotaReserveExcluded(auth, now); excluded {
+	if excluded, _ := isLegacyReserveExcludedForRequest(ctx, auth, now); excluded {
 		return true
 	}
 	if model != "" && len(auth.ModelStates) > 0 {

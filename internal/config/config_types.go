@@ -903,6 +903,9 @@ func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking
 // CodexKey represents the configuration for a Codex API key,
 // including the API key itself and an optional base URL for the API endpoint.
 type CodexKey struct {
+	// CreditResetDay opts into monthly credit parking (UTC, 1–31). Zero disables it.
+	CreditResetDay int `yaml:"credit-reset-day,omitempty" json:"credit-reset-day,omitempty"`
+
 	// APIKey is the authentication key for accessing Codex API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 

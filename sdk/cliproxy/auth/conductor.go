@@ -204,6 +204,9 @@ type Manager struct {
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
+	trafficPickMu             sync.Mutex
+	trafficMu                 sync.Mutex
+	traffic                   trafficShapingState
 	configCooldownMu          sync.Mutex
 	syncSchedulerMu           sync.Mutex
 	// executionSeq stamps upstream dispatches with a monotonic sequence used
@@ -236,6 +239,9 @@ type Manager struct {
 	requestRetry        atomic.Int32
 	maxRetryCredentials atomic.Int32
 	maxRetryInterval    atomic.Int64
+
+	// Throttle the warning for the known legacy Codex model name.
+	lastLegacyCodexWarning atomic.Int64
 
 	// oauthModelAlias stores global OAuth model alias mappings (alias -> upstream name) keyed by channel.
 	oauthModelAlias atomic.Value

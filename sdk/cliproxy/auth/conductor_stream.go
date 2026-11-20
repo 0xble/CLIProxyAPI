@@ -501,7 +501,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			applyRequestScopedActionToResult(action, cooldown, okAction, &result)
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-			errStream = annotateTrustedRetryAfterByHint(errStream)
+			errStream = annotateTrustedRetryAfterByHint(ctx, errStream)
 			syncPreferredUpstreamError(&upstreamErr, errStream)
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
@@ -592,7 +592,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				applyRequestScopedActionToResult(action, cooldown, okAction, &result)
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-				bootstrapErr = annotateTrustedRetryAfterByHint(bootstrapErr)
+				bootstrapErr = annotateTrustedRetryAfterByHint(ctx, bootstrapErr)
 				bootstrapErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 				syncPreferredUpstreamError(&upstreamErr, bootstrapErr)
 				discardStreamChunks(streamResult.Chunks)
@@ -614,7 +614,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					result.CredentialScope = true
 				}
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-				bootstrapErr = annotateTrustedRetryAfterByHint(bootstrapErr)
+				bootstrapErr = annotateTrustedRetryAfterByHint(ctx, bootstrapErr)
 				syncPreferredUpstreamError(&upstreamErr, bootstrapErr)
 				discardStreamChunks(streamResult.Chunks)
 				return nil, bootstrapErr
@@ -627,7 +627,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					result.CredentialScope = true
 				}
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-				bootstrapErr = annotateTrustedRetryAfterByHint(bootstrapErr)
+				bootstrapErr = annotateTrustedRetryAfterByHint(ctx, bootstrapErr)
 				bootstrapErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 				syncPreferredUpstreamError(&upstreamErr, bootstrapErr)
 				discardStreamChunks(streamResult.Chunks)
@@ -645,7 +645,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				result.CredentialScope = true
 			}
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-			bootstrapErr = annotateTrustedRetryAfterByHint(bootstrapErr)
+			bootstrapErr = annotateTrustedRetryAfterByHint(ctx, bootstrapErr)
 			bootstrapErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 			syncPreferredUpstreamError(&upstreamErr, bootstrapErr)
 			discardStreamChunks(streamResult.Chunks)

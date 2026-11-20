@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -325,6 +326,16 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		out = append(out, e)
 	}
 	cfg.OpenAICompatibility = out
+}
+
+// ValidateCodexCreditResetDays checks per-key monthly reset days before activation.
+func (cfg *Config) ValidateCodexCreditResetDays() error {
+	for i, key := range cfg.CodexKey {
+		if key.CreditResetDay < 0 || key.CreditResetDay > 31 {
+			return fmt.Errorf("codex-api-key[%d].credit-reset-day must be between 1 and 31, or 0 to disable", i)
+		}
+	}
+	return nil
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.
