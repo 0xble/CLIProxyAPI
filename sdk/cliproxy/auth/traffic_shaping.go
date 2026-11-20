@@ -615,8 +615,16 @@ func (m *Manager) pickWithTraffic(ctx context.Context, providers []string, model
 		}
 		delay := min(deferred.until.Sub(clock.Now()), trafficWait-request.waited)
 		if delay <= 0 {
-			log.WithField("eligible_at", deferred.until).Debug("background request deferred after account traffic wait")
-			return nil, nil, "", deferred
+			if request.waited >= trafficWait {
+				// shapeTraffic proceeds once the wait is spent, so this is unreachable
+				// in practice. It stays as a loop guard.
+				log.WithField("eligible_at", deferred.until).Debug("background request deferred after account traffic wait")
+				return nil, nil, "", deferred
+			}
+			// An eligibility time already in the past must not turn into a 503:
+			// treat the wait as spent so the next pick proceeds.
+			request.waited = trafficWait
+			continue
 		}
 		request.waited += delay
 		if errWait := clock.Wait(ctx, delay); errWait != nil {

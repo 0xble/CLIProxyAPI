@@ -69,7 +69,13 @@ func TestTrafficShapingBackgroundHTTPWaitThenProceed(t *testing.T) {
 						return coreexecutor.Response{Payload: []byte(`{"ok":true}`)}, attempt(a, opts)
 					},
 					streamFn: func(_ context.Context, a *coreauth.Auth, _ coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-						return nil, attempt(a, opts)
+						if err := attempt(a, opts); err != nil {
+							return nil, err
+						}
+						chunks := make(chan coreexecutor.StreamChunk, 1)
+						chunks <- coreexecutor.StreamChunk{Payload: []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")}
+						close(chunks)
+						return &coreexecutor.StreamResult{Chunks: chunks}, nil
 					},
 				})
 				register := func(a *coreauth.Auth) {
@@ -102,11 +108,17 @@ func TestTrafficShapingBackgroundHTTPWaitThenProceed(t *testing.T) {
 				if len(req.Header.Values(classHeader)) != 0 {
 					t.Error("request-class hint remained on the inbound request")
 				}
-				if streaming || upstreamFailure {
-					if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "" || strings.Contains(rec.Body.String(), "background request deferred") {
-						t.Fatalf("want post-wait request handling without traffic deferral; got %d, headers %v, body %s", rec.Code, rec.Header(), rec.Body.String())
+				// Our soft limits never fail the request: after the wait it runs. An
+				// upstream failure on the account it lands on is surfaced as that
+				// failure, never as a traffic-policy deferral.
+				if strings.Contains(rec.Body.String(), "background request deferred") || rec.Header().Get("Retry-After") != "" {
+					t.Fatalf("traffic policy deferred after the wait; got %d, headers %v, body %s", rec.Code, rec.Header(), rec.Body.String())
+				}
+				if upstreamFailure {
+					if rec.Code == http.StatusOK {
+						t.Fatalf("want the upstream failure surfaced; got %d, body %s", rec.Code, rec.Body.String())
 					}
-				} else if rec.Code != http.StatusOK || rec.Body.String() != `{"ok":true}` {
+				} else if rec.Code != http.StatusOK || (!streaming && rec.Body.String() != `{"ok":true}`) || (streaming && !strings.Contains(rec.Body.String(), "message_stop")) {
 					t.Fatalf("want successful post-wait request; got %d, headers %v, body %s", rec.Code, rec.Header(), rec.Body.String())
 				}
 				wantFailingCalls := 0
