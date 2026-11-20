@@ -425,20 +425,33 @@ func (m *Manager) shapeTraffic(ctx context.Context, options *trafficPick, candid
 		}
 		return trafficDecision{}
 	}
+	waited := background && options.request.waited >= trafficWait
+	proceedPastPreference := func(reasons []string, isBound bool, fallback []*Auth) ([]*Auth, error) {
+		log.WithFields(log.Fields{"reasons": reasons, "bound": isBound, "waited": options.request.waited}).Info("background request proceeding past account traffic preference")
+		return fallback, nil
+	}
 	// A soft-deferred binding is still hard-available. Do not hand another
 	// account to affinity: that would turn a background delay into a rebind
 	// or a strict-affinity failure for the shared interactive session.
 	if lowerBound != nil {
 		if d := decision(lowerBound); len(d.reasons) > 0 {
+			if waited {
+				return proceedPastPreference(d.reasons, true, []*Auth{lowerBound})
+			}
 			return nil, &trafficDeferred{until: d.until, now: now, bound: true}
 		}
 	}
 	var eligible []*Auth
 	var next time.Time
+	var deferredReasons []string
 	for _, a := range softTier {
 		d := decision(a)
 		if len(d.reasons) > 0 {
+			deferredReasons = append(deferredReasons, d.reasons...)
 			if a.ID == bound {
+				if waited {
+					return proceedPastPreference(d.reasons, true, []*Auth{a})
+				}
 				return nil, &trafficDeferred{until: d.until, now: now, bound: true}
 			}
 			if next.IsZero() || d.until.Before(next) {
@@ -452,6 +465,9 @@ func (m *Manager) shapeTraffic(ctx context.Context, options *trafficPick, candid
 		if background {
 			if lowerBound != nil {
 				return []*Auth{lowerBound}, nil
+			}
+			if waited {
+				return proceedPastPreference(deferredReasons, false, softTier)
 			}
 			return nil, &trafficDeferred{until: next, now: now}
 		}

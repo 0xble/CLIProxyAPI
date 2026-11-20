@@ -32,7 +32,7 @@ func (c *trafficHandlerClock) Wait(ctx context.Context, d time.Duration) error {
 	return nil
 }
 
-func TestTrafficShapingBackgroundHTTPDeferral(t *testing.T) {
+func TestTrafficShapingBackgroundHTTPWaitThenProceed(t *testing.T) {
 	for _, streaming := range []bool{false, true} {
 		for _, upstreamFailure := range []bool{false, true} {
 			name := "nonstream"
@@ -102,15 +102,23 @@ func TestTrafficShapingBackgroundHTTPDeferral(t *testing.T) {
 				if len(req.Header.Values(classHeader)) != 0 {
 					t.Error("request-class hint remained on the inbound request")
 				}
-				if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "3540" || !strings.Contains(rec.Body.String(), "background request deferred") {
-					t.Fatalf("want 503 with policy Retry-After; got %d, headers %v, body %s", rec.Code, rec.Header(), rec.Body.String())
+				if streaming || upstreamFailure {
+					if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "" || strings.Contains(rec.Body.String(), "background request deferred") {
+						t.Fatalf("want post-wait request handling without traffic deferral; got %d, headers %v, body %s", rec.Code, rec.Header(), rec.Body.String())
+					}
+				} else if rec.Code != http.StatusOK || rec.Body.String() != `{"ok":true}` {
+					t.Fatalf("want successful post-wait request; got %d, headers %v, body %s", rec.Code, rec.Header(), rec.Body.String())
 				}
 				wantFailingCalls := 0
 				if upstreamFailure {
 					wantFailingCalls = 1
 				}
-				if clock.waited != time.Minute || shapedCalls != 1 || failingCalls != wantFailingCalls {
-					t.Fatalf("wrong defer path: waited %s, shaped calls %d, failing calls %d (want %d)", clock.waited, shapedCalls, failingCalls, wantFailingCalls)
+				wantShapedCalls := 2
+				if upstreamFailure {
+					wantShapedCalls = 1
+				}
+				if clock.waited != time.Minute || shapedCalls != wantShapedCalls || failingCalls != wantFailingCalls {
+					t.Fatalf("wrong post-wait path: waited %s, shaped calls %d (want %d), failing calls %d (want %d)", clock.waited, shapedCalls, wantShapedCalls, failingCalls, wantFailingCalls)
 				}
 			})
 		}

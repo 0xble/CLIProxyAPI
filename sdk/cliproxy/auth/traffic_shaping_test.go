@@ -84,9 +84,8 @@ func testTrafficShapingSelectionLadder(t *testing.T, rebind string) {
 	}
 	bg, bgOpts := m.consumeTrafficClass(context.Background(), executor.Options{Headers: http.Header{requestClassHeader: {"background"}}}, false)
 	_, _, _, err := m.pickWithTraffic(bg, []string{"claude"}, model, bgOpts, nil)
-	var deferred *trafficDeferred
-	if !errors.As(err, &deferred) || clock.waited != time.Minute || SafeResponseHeaders(err).Get("Retry-After") != "3540" {
-		t.Fatalf("want one minute of wait and trusted deferral, waited=%s err=%v headers=%v", clock.waited, err, SafeResponseHeaders(err))
+	if err != nil || clock.waited != time.Minute {
+		t.Fatalf("background request should proceed on the bound account after the soft wait: got err=%v, waited=%s", err, clock.waited)
 	}
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -117,8 +116,8 @@ func TestTrafficShapingBackgroundPreservesBinding(t *testing.T) {
 			if got, err := pick("interactive", a); err != nil || got == nil || got.ID != a.ID {
 				t.Fatalf("initial pick = %v, %v; want %s", got, err, a.ID)
 			}
-			if got, err := pick("background", b); got != nil || !isRequestStopError(err) || SafeResponseHeaders(err).Get("Retry-After") != "3540" || clock.waited != time.Minute {
-				t.Fatalf("background pick = %v, %v, headers %v, waited %v; want policy deferral", got, err, SafeResponseHeaders(err), clock.waited)
+			if got, err := pick("background", b); err != nil || got == nil || got.ID != a.ID || clock.waited != time.Minute {
+				t.Fatalf("background pick = %v, %v, waited %v; want bound account after policy wait", got, err, clock.waited)
 			}
 			if got, status := m.LookupSessionAffinity("mixed", "traffic-tier-test-model", "sticky"); status != "bound" || got == nil || got.ID != a.ID {
 				t.Fatalf("binding = %v, %s; want %s", got, status, a.ID)
@@ -130,8 +129,8 @@ func TestTrafficShapingBackgroundPreservesBinding(t *testing.T) {
 			// tier recovers from a hard cooldown); soft limits must not move it.
 			higher := shapedAuth("higher", false)
 			higher.Attributes = map[string]string{"priority": "10"}
-			if got, err := pick("background", higher); got != nil || !isRequestStopError(err) || SafeResponseHeaders(err).Get("Retry-After") != "3540" {
-				t.Fatalf("background lower-tier binding = %v, %v, headers %v; want policy deferral", got, err, SafeResponseHeaders(err))
+			if got, err := pick("background", higher); err != nil || got == nil || got.ID != a.ID || clock.waited != 2*time.Minute {
+				t.Fatalf("background lower-tier binding = %v, %v, waited %v; want bound account after policy wait", got, err, clock.waited)
 			}
 			if got, err := pick("interactive"); err != nil || got == nil || got.ID != a.ID {
 				t.Fatalf("interactive lower-tier binding = %v, %v; want %s", got, err, a.ID)
@@ -161,21 +160,21 @@ func TestTrafficShapingSoftLimitsStayInPriorityTier(t *testing.T) {
 			if got, err := pick(""); err != nil || got == nil || got.ID != subscription.ID {
 				t.Fatalf("unbound interactive pick = %v, %v; want subscription override", got, err)
 			}
-			if got, err := pick("background"); got != nil || !isRequestStopError(err) || SafeResponseHeaders(err).Get("Retry-After") != "3540" || clock.waited != time.Minute {
-				t.Fatalf("background pick = %v, %v, headers %v, waited %v; want policy deferral", got, err, SafeResponseHeaders(err), clock.waited)
+			if got, err := pick("background"); err != nil || got == nil || got.ID != subscription.ID || clock.waited != time.Minute {
+				t.Fatalf("background pick = %v, %v, waited %v; want subscription after policy wait", got, err, clock.waited)
 			}
 			m.mu.Lock()
 			m.auths[paid.ID].credentialRetryAfter = time.Now().Add(5 * time.Minute)
 			m.mu.Unlock()
-			if _, err := pick("background"); SafeResponseHeaders(err).Get("Retry-After") != "3480" {
-				t.Fatalf("background retry followed a lower tier cooldown: %v, headers %v", err, SafeResponseHeaders(err))
+			if got, err := pick("background"); err != nil || got == nil || got.ID != subscription.ID || clock.waited != 2*time.Minute {
+				t.Fatalf("background pick with paid key cooling = %v, %v, waited %v; want subscription, never paid", got, err, clock.waited)
 			}
 			m.mu.Lock()
 			m.auths[subscription.ID].credentialRetryAfter = clock.now.Add(time.Hour)
 			m.auths[paid.ID].credentialRetryAfter = time.Time{}
 			m.mu.Unlock()
 			if got, err := pick("background"); err != nil || got == nil || got.ID != paid.ID {
-				t.Fatalf("hard cooldown pick = %v, %v; want lower tier fallback", got, err)
+				t.Fatalf("hard cooldown pick = %v, %v; want paid key once subscription is hard-unavailable", got, err)
 			}
 		})
 	}
@@ -195,8 +194,8 @@ func TestTrafficShapingSoftDeferralSkipsSameTierPaidKey(t *testing.T) {
 	if got, err := pick(""); err != nil || got == nil || got.ID != subscription.ID {
 		t.Fatalf("interactive pick over the soft cap = %v, %v; want subscription override, never the same-tier paid key", got, err)
 	}
-	if got, err := pick("background"); got != nil || !isRequestStopError(err) || SafeResponseHeaders(err).Get("Retry-After") != "3540" || clock.waited != time.Minute {
-		t.Fatalf("background pick over the soft cap = %v, %v, headers %v, waited %v; want deferral, never the same-tier paid key", got, err, SafeResponseHeaders(err), clock.waited)
+	if got, err := pick("background"); err != nil || got == nil || got.ID != subscription.ID || clock.waited != time.Minute {
+		t.Fatalf("background pick over the soft cap = %v, %v, waited %v; want subscription after policy wait, never paid", got, err, clock.waited)
 	}
 	m.mu.Lock()
 	m.auths[subscription.ID].credentialRetryAfter = clock.now.Add(time.Hour)
