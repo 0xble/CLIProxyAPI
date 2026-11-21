@@ -153,13 +153,14 @@ type Auth struct {
 	// stamped at or below it were dispatched before the cooldown existed and
 	// must not clear it. Runtime only: zero after restart so restored
 	// cooldowns can still be cleared by any success.
-	cooldownRecordedSeq     uint64    `json:"-"`
-	forceCooldownUntil      time.Time `json:"-"`
-	quotaForceCooldownUntil time.Time `json:"-"`
-	credQuotaForceUntil     time.Time `json:"-"`
-	credentialRetryAfter    time.Time `json:"-"`
-	nonQuotaCooldownUntil   time.Time `json:"-"`
-	forceCooldownSeeded     bool      `json:"-"`
+	cooldownRecordedSeq     uint64            `json:"-"`
+	forceCooldownUntil      time.Time         `json:"-"`
+	quotaForceCooldownUntil time.Time         `json:"-"`
+	credQuotaForceUntil     time.Time         `json:"-"`
+	credentialRetryAfter    time.Time         `json:"-"`
+	nonQuotaCooldownUntil   time.Time         `json:"-"`
+	forceCooldownSeeded     bool              `json:"-"`
+	quotaReserveLatch       quotaReserveLatch `json:"-"`
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`

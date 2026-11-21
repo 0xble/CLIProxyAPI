@@ -297,8 +297,8 @@ func TestAuthManager_CooldownPersistenceAcrossRestore(t *testing.T) {
 	if !ok || restoredAuth == nil {
 		t.Fatal("restored auth not found")
 	}
-	if !restoredAuth.Quota.Exceeded || restoredAuth.Quota.NextRecoverAt.Before(time.Now().Add(6*24*time.Hour)) {
-		t.Fatalf("restored auth quota was not preserved: quota=%+v", restoredAuth.Quota)
+	if !restoredAuth.Quota.Exceeded || restoredAuth.Quota.NextRecoverAt.Before(time.Now().Add(10*time.Minute)) || restoredAuth.Quota.NextRecoverAt.After(time.Now().Add(16*time.Minute)) {
+		t.Fatalf("restored auth quota was not bounded to legacy recheck: quota=%+v", restoredAuth.Quota)
 	}
 }
 

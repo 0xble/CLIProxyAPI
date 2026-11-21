@@ -51,6 +51,53 @@ func TestEvaluateQuotaReserve(t *testing.T) {
 	}
 }
 
+func TestQuotaReserveHysteresisKeepsNoisyReadingExcluded(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(72 * time.Hour)
+	policy := QuotaReservePolicy{ReservePercent: 15, ResetWindow: 24 * time.Hour, FinalReservePercent: 5}
+	auth := &Auth{ID: "hysteresis", Provider: "claude", Metadata: map[string]any{
+		MetadataQuotaGuard: map[string]any{"reserve_percent": 15, "reset_window": "24h", "final_reserve_percent": 5},
+	}}
+	var decision QuotaReserveDecision
+	var ok bool
+	for _, remaining := range []float64{14.9, 15.1, 14.8, 15.3} {
+		auth.Quota.Signals = map[string]string{
+			"Anthropic-Ratelimit-Unified-7d-Utilization": strconv.FormatFloat((100-remaining)/100, 'f', 3, 64),
+			"Anthropic-Ratelimit-Unified-7d-Reset":       strconv.FormatInt(reset.Unix(), 10),
+		}
+		decision, ok := quotaReserveDecisionForAuth(auth, now)
+		if !ok || !decision.Excluded {
+			t.Fatalf("remaining %.1f%% decision = %+v ok=%v, want excluded", remaining, decision, ok)
+		}
+	}
+
+	auth.Quota.Signals["Anthropic-Ratelimit-Unified-7d-Utilization"] = "0.849"
+	decision, ok = quotaReserveDecisionForAuth(auth, now)
+	if !ok || !decision.Excluded {
+		t.Fatalf("remaining 15.1%% decision = %+v ok=%v, want latch-held exclusion", decision, ok)
+	}
+	reading, _ := weeklyQuotaReading(auth.Provider, auth.Quota, now)
+	updateQuotaReserveLatch(auth, policy, reading, decision, now)
+
+	auth.Quota.Signals["Anthropic-Ratelimit-Unified-7d-Utilization"] = "0.830"
+	decision, ok = quotaReserveDecisionForAuth(auth, now)
+	if !ok || decision.Excluded || decision.Reason != "above_reserve" {
+		t.Fatalf("remaining 17%% decision = %+v ok=%v, want eligible", decision, ok)
+	}
+
+	newReset := reset.Add(time.Hour)
+	auth.Quota.Signals["Anthropic-Ratelimit-Unified-7d-Reset"] = strconv.FormatInt(newReset.Unix(), 10)
+	auth.Quota.Signals["Anthropic-Ratelimit-Unified-7d-Utilization"] = "0.849"
+	decision, ok = quotaReserveDecisionForAuth(auth, now)
+	if !ok || decision.Excluded || decision.ResetAt.Unix() != newReset.Unix() {
+		t.Fatalf("reset change decision = %+v ok=%v, want latch cleared", decision, ok)
+	}
+
+	if policy.ReservePercent != 15 {
+		t.Fatalf("policy floor = %.1f, want 15", policy.ReservePercent)
+	}
+}
+
 func TestParseQuotaReservePolicy(t *testing.T) {
 	if _, ok, err := ParseQuotaReservePolicy(map[string]any{"type": "claude"}); ok || err != nil {
 		t.Fatalf("absent policy: ok=%v err=%v", ok, err)
