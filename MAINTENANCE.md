@@ -1,18 +1,16 @@
 # Maintenance
 
-## Current candidate: v8.0.79
+## Current candidate: v8.0.80
 
-Upstream release `v8.0.79` (`6faa8d20`) is merged cleanly over fork main `86fd031e` (v8.0.78 plus CPA-001 through CPA-011 and account traffic shaping, #52). No conflicts.
+Upstream release `v8.0.80` (`f5c5681a`) is merged over fork main `7cfb5a0d` (v8.0.79 plus CPA-001 through CPA-012 and account traffic shaping). One textual conflict, plus 7 semantic call-site adaptations.
 
-v8.0.79 changes reviewed: home-backed Codex continuity (Home scheduler protocol negotiation, pre-admission and pre-output 429 continuity gates, `scheduler_rejected` as a terminal pick failure), Antigravity Hub changelists 2.33.0 with unmapped versions pinned, HTTP/1.1 without ALPN for the Antigravity model probe, and `uniqueItems` stripped from Codex tool parameter schemas.
-
-Carried repair from v8.0.77: upstream's own `TestModelsWithClientVersionReturnsCodexCatalog` fails on the v8.0.77 tag, because `a5e8f69e` refreshed `codex_client_models.json` from Codex CLI 0.169.0 and gpt-5.5 no longer offers the priority service tier, while the test still expects one. The test now takes the expected tiers from the catalog template, backported unchanged from open upstream PR router-for-me/CLIProxyAPI#7646. Drop this note once a release contains that PR. v8.0.79 does not contain that PR.
+v8.0.80 changes reviewed: request auth preparation now honors request-scoped errors, Retry-After, and credential scope on `PrepareRequestAuth` failure and serializes with refresh locks; consistent cancellation and Retry-After cooldown handling; stream bootstrap Retry-After annotation scoped to the same upstream attempt; executeHome parity fixes; Responses output synthesis and refusal fallbacks for meta executors; gzip request bodies on Claude routes; Claude advisor blocks stripped after credential rebind; Antigravity OAuth refresh transport, 403 probe backoff, and credits fallback stop rules; Gemini 4 max completion tokens capped at 65536; credential-scoped after-auth plugin termination; and a regenerated Codex client catalog (#7697).
 
 Patch review:
 
-- v8.0.79 changes `conductor_execution.go` and `conductor_home_execution.go`, which carry fork edits: the three-value `matchRequestScopedErrorAction` with cooldown (CPA Codex overload cap), context-aware `annotateTrustedRetryAfterByHint` (Retry-After preservation across CPA hops), and soft traffic shaping. The merge is clean and every merged call site keeps the fork signatures. Upstream's new Home continuity gates run only when Home is configured, which the local runtime does not do.
-- v8.0.79 does not touch `selector.go`, `scheduler.go`, `quota_reserve.go`, `conductor_cooldown.go`, `synthesizer/file.go`, the Codex terminal, stream, and websocket executors, or the v8 management redaction.
-- v8.0.78 adds the boolean `oauth.providers.claude.oauth-include-create-api-key`. The fork's v8 management redaction (`redactReadOnlyYAMLNode`) masked any scalar whose key ends in `-api-key`, so it rewrote that boolean to `***` under a `!!bool` tag and the JSON field read returned 500 `decode_failed` (upstream `TestConfigV8ClaudeOAuthIncludeCreateAPIKey`). Booleans and nulls are now exempt from masking. Every other scalar, including bare numbers that the typed config reads as string credentials, is still masked and retagged `!!str` so the redacted node stays decodable. `TestRedactReadOnlyYAMLNodeScalarTypes` pins the boolean, bare-numeric header, and numeric list cases.
+- Conflict in `internal/api/server_test.go`: upstream #7697 regenerated `codex_client_models.json` so gpt-5.5 offers the priority tier again and asserts it with `hasCodexServiceTier`. The fork's carried #7646 backport (upstream closed it unmerged) is dropped in favor of upstream's assertion.
+- Semantic adaptation (CPA-001): upstream added `matchRequestScopedErrorAction` call sites on the `PrepareRequestAuth` failure paths in `conductor_execution.go` (3), `conductor_home_execution.go` (1), and the Antigravity credits fallback in `conductor_home.go` (3), all written against upstream's two-value signature. They now use the fork's three-value form and pass the request-scoped cooldown to `applyRequestScopedActionToResult`, except the credits stream path, which never applies a result. The 4 new `annotateTrustedRetryAfterByHint` calls pass the execution context (Retry-After preservation across CPA hops).
+- v8.0.80 does not touch `selector.go`, `scheduler.go`, `quota_reserve.go`, `conductor_cooldown.go`, or the Codex terminal, stream, and websocket executors, so CPA-003, CPA-007, CPA-010, CPA-011, and CPA-012 hooks are unchanged.
 
 Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
@@ -27,7 +25,9 @@ disabled on the fork for that reason.
 Initial local, `origin/main`, and `upstream/main` baseline on 2026-09-13:
 `44e62bc8acc2f224bff9c62d222717d3f6723dea` (upstream v7.3.1), with exact parity.
 Accepted upstream baseline before CPA-001: `d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5` (`v8.0.23`).
-Source candidate upstream release: `6faa8d20` (`v8.0.79`), merged cleanly over fork main `86fd031e` (`v8.0.78` plus CPA-011 and account traffic shaping) after reviewing the official release notes. The merged conductor call sites keep the fork signatures. CPA-001 through CPA-011 are retained.
+Source candidate upstream release: `f5c5681a` (`v8.0.80`), merged over fork main `7cfb5a0d` (`v8.0.79` plus CPA-001 through CPA-012) after reviewing the official release notes. The server test conflict takes upstream #7697, and the new prepare-failure call sites use the fork signatures. CPA-001 through CPA-012 are retained.
+
+Prior candidate upstream release: `6faa8d20` (`v8.0.79`), merged cleanly over fork main `86fd031e` (`v8.0.78` plus CPA-011 and account traffic shaping) after reviewing the official release notes. The merged conductor call sites keep the fork signatures. CPA-001 through CPA-011 are retained.
 
 Prior candidate upstream release: `db7f177d6b0e` (`v8.0.78`), with `a5e8f69e5630` (`v8.0.77`), merged cleanly over fork main `66948be659dbfb448869c7e62e5df371ab23854a` (`v8.0.76` plus CPA-011) after reviewing the official release notes. v8.0.78 touches the CPA-010 Codex stream executors without conflict, and the patch review above records why the failover hooks are intact. CPA-001 through CPA-011 are retained.
 
