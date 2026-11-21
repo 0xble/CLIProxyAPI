@@ -2131,9 +2131,7 @@ func TestClaudeModelListCloakingConfigHotReload(t *testing.T) {
 func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	clientID := "test-client-version-catalog"
-	tieredSlug, tieredServiceTiers := codexClientTestTemplateWithServiceTiers(t, "gpt-5.5")
 	modelRegistry.RegisterClient(clientID, "codex", []*registry.ModelInfo{
-		{ID: tieredSlug, Object: "model", OwnedBy: "openai", Type: "openai"},
 		{
 			ID:                  "gpt-5.5",
 			Object:              "model",
@@ -2207,22 +2205,13 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 
 	var gpt55 map[string]any
 	var custom map[string]any
-	var tiered map[string]any
 	for _, model := range resp.Models {
 		switch slug, _ := model["slug"].(string); slug {
 		case "gpt-5.5":
 			gpt55 = model
 		case "custom-codex-model-test":
 			custom = model
-		case tieredSlug:
-			tiered = model
 		}
-	}
-	if tiered == nil {
-		t.Fatalf("expected %s codex catalog entry", tieredSlug)
-	}
-	if got := tiered["service_tiers"]; !reflect.DeepEqual(got, tieredServiceTiers) {
-		t.Fatalf("%s service_tiers = %#v, want the template's %#v", tieredSlug, got, tieredServiceTiers)
 	}
 	if gpt55 == nil {
 		t.Fatal("expected gpt-5.5 codex catalog entry")
@@ -2230,23 +2219,21 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got := gpt55["apply_patch_tool_type"]; got != "freeform" {
 		t.Fatalf("gpt-5.5 apply_patch_tool_type = %#v, want freeform", got)
 	}
-	if _, ok := gpt55["minimal_client_version"]; !ok {
-		t.Fatal("expected minimal_client_version in codex catalog")
+	if got, _ := gpt55["minimal_client_version"].(string); got != "0.124.0" {
+		t.Fatalf("gpt-5.5 minimal_client_version = %#v, want 0.124.0", gpt55["minimal_client_version"])
 	}
 	if got, _ := gpt55["max_tokens"].(float64); got != 64000 {
 		t.Fatalf("gpt-5.5 max_tokens = %v, want 64000", gpt55["max_tokens"])
 	}
-	// A Codex-only model keeps the service tiers of its catalog template, which
-	// change whenever the catalog is refreshed from the Codex CLI.
-	wantServiceTiers, ok := codexClientTestTemplateModel(t, "gpt-5.5")["service_tiers"].([]any)
-	if !ok {
-		t.Fatal("expected service_tiers in the gpt-5.5 catalog template")
-	}
-	if got := gpt55["service_tiers"]; !reflect.DeepEqual(got, wantServiceTiers) {
-		t.Fatalf("gpt-5.5 service_tiers = %#v, want the template's %#v", got, wantServiceTiers)
+	serviceTiers, ok := gpt55["service_tiers"].([]any)
+	if !ok || !hasCodexServiceTier(serviceTiers, "priority") {
+		t.Fatalf("expected gpt-5.5 priority service tier, got %#v", gpt55["service_tiers"])
 	}
 	if custom == nil {
 		t.Fatal("expected custom model codex catalog entry")
+	}
+	if got, _ := custom["minimal_client_version"].(string); got != "0.124.0" {
+		t.Fatalf("custom minimal_client_version = %#v, want 0.124.0", custom["minimal_client_version"])
 	}
 	if got, _ := custom["display_name"].(string); got != "Custom Codex Model" {
 		t.Fatalf("custom display_name = %q, want Custom Codex Model", got)
@@ -2316,6 +2303,32 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	for slug, found := range hiddenModels {
 		if !found {
 			t.Fatalf("expected hidden model %s in codex catalog", slug)
+		}
+	}
+
+	olderReq := httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.153.4", nil)
+	olderReq.Header.Set("Authorization", "Bearer test-key")
+	olderRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(olderRR, olderReq)
+	if olderRR.Code != http.StatusOK {
+		t.Fatalf("older client status = %d, want %d body=%s", olderRR.Code, http.StatusOK, olderRR.Body.String())
+	}
+	var olderResp struct {
+		Models []map[string]any `json:"models"`
+	}
+	if errUnmarshal := json.Unmarshal(olderRR.Body.Bytes(), &olderResp); errUnmarshal != nil {
+		t.Fatalf("failed to parse older client response JSON: %v", errUnmarshal)
+	}
+	olderMinVersions := make(map[string]string, 2)
+	for _, model := range olderResp.Models {
+		slug, _ := model["slug"].(string)
+		if slug == "gpt-5.5" || slug == "custom-codex-model-test" {
+			olderMinVersions[slug], _ = model["minimal_client_version"].(string)
+		}
+	}
+	for _, slug := range []string{"gpt-5.5", "custom-codex-model-test"} {
+		if got := olderMinVersions[slug]; got != "0.124.0" {
+			t.Fatalf("older client %s minimal_client_version = %q, want 0.124.0", slug, got)
 		}
 	}
 }
@@ -2580,7 +2593,20 @@ func codexClientTestPriority(raw any) int {
 	}
 }
 
-func codexClientTestTemplates(t *testing.T) []map[string]any {
+func hasCodexServiceTier(tiers []any, id string) bool {
+	for _, raw := range tiers {
+		tier, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if tierID, _ := tier["id"].(string); tierID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func codexClientTestMaxTemplatePriority(t *testing.T) int {
 	t.Helper()
 	var payload struct {
 		Models []map[string]any `json:"models"`
@@ -2588,40 +2614,8 @@ func codexClientTestTemplates(t *testing.T) []map[string]any {
 	if err := json.Unmarshal(registry.GetCodexClientModelsJSON(), &payload); err != nil {
 		t.Fatalf("parse Codex client model templates: %v", err)
 	}
-	return payload.Models
-}
-
-func codexClientTestTemplateModel(t *testing.T, slug string) map[string]any {
-	t.Helper()
-	for _, model := range codexClientTestTemplates(t) {
-		if got, _ := model["slug"].(string); got == slug {
-			return model
-		}
-	}
-	t.Fatalf("Codex client model template %q not found", slug)
-	return nil
-}
-
-// codexClientTestTemplateWithServiceTiers returns the first catalog template,
-// other than skip, that offers at least one service tier, so the test does not
-// depend on which models the current catalog gives a tier.
-func codexClientTestTemplateWithServiceTiers(t *testing.T, skip string) (string, []any) {
-	t.Helper()
-	for _, model := range codexClientTestTemplates(t) {
-		slug, _ := model["slug"].(string)
-		tiers, _ := model["service_tiers"].([]any)
-		if slug != "" && slug != skip && len(tiers) > 0 {
-			return slug, tiers
-		}
-	}
-	t.Fatal("expected a Codex client model template with service tiers")
-	return "", nil
-}
-
-func codexClientTestMaxTemplatePriority(t *testing.T) int {
-	t.Helper()
 	maxPriority := 0
-	for _, model := range codexClientTestTemplates(t) {
+	for _, model := range payload.Models {
 		if priority := codexClientTestPriority(model["priority"]); priority > maxPriority {
 			maxPriority = priority
 		}
