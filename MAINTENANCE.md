@@ -1,6 +1,22 @@
 # Maintenance
 
-## Current candidate: v8.0.80
+## Current candidate: v8.1.0
+
+Upstream release `v8.1.0` (`69607634`) is merged over fork main `6968ce78` (v8.0.80 plus CPA-001 through CPA-012 and account traffic shaping). Four textual conflicts were resolved, with upstream's new management/config/stream behavior retained and fork cooldown, credit-park, affinity, redaction, and load-validation behavior adapted around it. No active patch was retired.
+
+v8.1.0 changes reviewed: Copilot provider/catalog and signed replay support; config file locking, streaming safety, server identity, ETag/CAS management writes and document-preserving YAML reads; expanded Antigravity regressions and transport fixes; model/catalog updates; and new store/workspace persistence support.
+
+Patch review:
+
+- `internal/api/handlers/management/config_v8.go`: kept upstream document-preserving YAML GET output, content-type selection, and projected server identity while retaining the fork's always-redacted management view and API-key auth-index injection.
+- `internal/config/config_load.go`: took upstream's locked startup rewrite/upload transaction and ephemeral server-ID cleanup, then restored CPA-012's `ValidateCodexCreditResetDays` load-time validation.
+- `sdk/cliproxy/auth/conductor_execution.go`: took upstream execution/home retry, stream-attempt, and request-scoped continuation behavior; adapted all new matcher call sites to the fork's three-value `(action, cooldown, ok)` signature, propagated cooldowns to results, and passed execution contexts to Retry-After annotation. Boolean-only matcher checks discard the cooldown explicitly.
+- `sdk/cliproxy/auth/conductor_stream.go`: took upstream attempt cancellation, bootstrap/header handling, and continuation behavior; adapted matcher calls with fork cooldown propagation and context-aware Retry-After annotation while preserving Codex stream-bootstrap buffering and failover semantics.
+- Upstream changes to selector, cooldown, Home, config types, management identity, and related executor surfaces were auto-merged and require re-checking against CPA-001, CPA-003, CPA-007, CPA-010, CPA-011, CPA-012, and the read-only management divergence; no retirement condition is met.
+
+Activation covers the local CPA service only. This source candidate is for review; no installer, configuration, service restart, or provider canary is part of the sync. The source gate is `bin/ci gate`.
+
+## Prior candidate: v8.0.80
 
 Upstream release `v8.0.80` (`f5c5681a`) is merged over fork main `7cfb5a0d` (v8.0.79 plus CPA-001 through CPA-012 and account traffic shaping). One textual conflict, plus 7 semantic call-site adaptations.
 
