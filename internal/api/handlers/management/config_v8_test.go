@@ -23,7 +23,7 @@ import (
 func TestConfigV8YAMLGetRedactsSecretsInLaterDocuments(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	raw := "config-version: 8\nserver: {port: 8317}\nmanagement: {secret-key: first-secret}\n---\nmanagement: {secret-key: later-secret}\n"
+	raw := "config-version: 8\nserver: {port: 8317}\nmanagement: {secret-key: first-secret}\n---\nmanagement: {secret-key: later-secret}\noauth:\n  providers:\n    codex:\n      live-media-relay:\n        ice-servers:\n          - {urls: ['turn:later.invalid:3478'], username: later-turn-user}\n"
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +48,19 @@ func TestConfigV8YAMLGetRedactsSecretsInLaterDocuments(t *testing.T) {
 	}
 	if !strings.Contains(body, managementSecretMask) {
 		t.Fatalf("GET config.yaml did not redact multi-document secrets: %s", body)
+	}
+	docs, err := config.DecodeConfigDocuments(recorder.Body.Bytes())
+	if err != nil || len(docs) != 2 {
+		t.Fatalf("GET config.yaml changed document presence: documents=%d err=%v body=%s", len(docs), err, body)
+	}
+	laterRoot := docs[1].Content[0]
+	laterSecret := configV8Node(laterRoot, []string{"management", "secret-key"})
+	if laterSecret == nil || !strings.HasPrefix(laterSecret.Value, managementSecretMask) || laterSecret.Value == "later-secret" {
+		t.Fatalf("later document management secret was not masked: %s", body)
+	}
+	servers := configV8Node(laterRoot, []string{"oauth", "providers", "codex", "live-media-relay", "ice-servers"})
+	if servers == nil || servers.Kind != yaml.SequenceNode || len(servers.Content) != 1 || configV8Node(servers.Content[0], []string{"username"}) != nil || strings.Contains(body, "later-turn-user") {
+		t.Fatalf("GET config.yaml leaked later-document TURN username: %s", body)
 	}
 }
 

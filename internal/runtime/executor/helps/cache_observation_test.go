@@ -98,8 +98,24 @@ func TestCacheObservationConcurrentBudgetAndReplacement(t *testing.T) {
 	}
 	different := c
 	different.SessionID = "other"
-	if beginCacheCapture(different, "other", now) != nil {
-		t.Fatal("reload replaced unexpired capture")
+	if beginCacheCapture(different, "other", now) == nil {
+		t.Fatal("changed configuration did not start a replacement capture")
+	}
+}
+
+func TestCacheObservationConfigChangeStartsNewScope(t *testing.T) {
+	resetCacheCapture(t)
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	first := config.CacheObservationConfig{SessionID: "first", ExpiresAt: now.Add(time.Minute).Format(time.RFC3339), MaxAttempts: 2}
+	second := first
+	second.ExpiresAt = now.Add(2 * time.Minute).Format(time.RFC3339)
+	firstScope := beginCacheCapture(first, first.SessionID, now)
+	secondScope := beginCacheCapture(second, second.SessionID, now)
+	if firstScope == nil || secondScope == nil || firstScope == secondScope {
+		t.Fatal("changed configuration did not replace the active capture scope")
+	}
+	if beginCacheCapture(second, second.SessionID, now) != secondScope {
+		t.Fatal("replacement scope did not retain its identity")
 	}
 }
 

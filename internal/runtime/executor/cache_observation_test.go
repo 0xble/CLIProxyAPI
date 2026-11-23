@@ -37,9 +37,9 @@ func TestProviderCacheObservationWireAndUsage(t *testing.T) {
 	capture := &observerUsageCapture{alias: alias, records: make(chan usage.Record, 32)}
 	usage.RegisterNamedPlugin(alias, capture)
 	t.Cleanup(func() { usage.RegisterNamedPlugin(alias, codexResponseModelNoopUsagePlugin{}) })
-	session := "cache-observer-executor-fixture-" + strings.ReplaceAll(t.Name(), "/", "-")
+	session := "cache-observer-executor-fixture"
 	cfg := &config.Config{CacheObservation: &config.CacheObservationConfig{
-		SessionID: session, ExpiresAt: time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339), MaxAttempts: 20,
+		SessionID: session, ExpiresAt: time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339Nano), MaxAttempts: 20,
 	}}
 	ctx := usage.WithRequestedModelAlias(util.WithSessionID(context.Background(), session), alias)
 	claudeAuth := &cliproxyauth.Auth{ID: "cache-observation-oauth", Attributes: map[string]string{"api_key": "sk-ant-oat-fixture"}, Metadata: map[string]any{

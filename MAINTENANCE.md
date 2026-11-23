@@ -1,18 +1,19 @@
 # Maintenance
 
-## Current candidate: v8.1.0
+## Current candidate: v8.1.1
 
-Upstream release `v8.1.0` (`69607634`) is merged over fork main `6968ce78` (v8.0.80 plus CPA-001 through CPA-012 and account traffic shaping). Four textual conflicts were resolved, with upstream's new management/config/stream behavior retained and fork cooldown, credit-park, affinity, redaction, and load-validation behavior adapted around it. No active patch was retired.
+Upstream release `v8.1.1` (`6eb8554f`) is merged over fork sync head `31ad6e0d` as merge commit `90f43b89`, with follow-up fixes on this branch. The merge was conflict-free; upstream's Antigravity, Devin, Copilot, pluginhost scheduler, registry, session identity, Codex Responses, and dependency updates are retained. No active patch was retired.
 
-v8.1.0 changes reviewed: Copilot provider/catalog and signed replay support; config file locking, streaming safety, server identity, ETag/CAS management writes and document-preserving YAML reads; expanded Antigravity regressions and transport fixes; model/catalog updates; and new store/workspace persistence support.
+v8.1.1 changes reviewed: the upstream provider, registry, scheduler, session-identity, Codex Responses, and dependency updates; the fork's cooldown, credit-park, affinity, redaction, cache-observation, and load-validation behavior; and management YAML document-preserving reads. The executor cache-observation regression is fixed at its process-global scope replacement root cause, and management YAML redaction now applies TURN cleanup to every document while preserving later-document presence.
 
 Patch review:
 
-- `internal/api/handlers/management/config_v8.go`: kept upstream document-preserving YAML GET output, content-type selection, and projected server identity while retaining the fork's always-redacted management view and API-key auth-index injection.
-- `internal/config/config_load.go`: took upstream's locked startup rewrite/upload transaction and ephemeral server-ID cleanup, then restored CPA-012's `ValidateCodexCreditResetDays` load-time validation.
-- `sdk/cliproxy/auth/conductor_execution.go`: took upstream execution/home retry, stream-attempt, and request-scoped continuation behavior; adapted all new matcher call sites to the fork's three-value `(action, cooldown, ok)` signature, propagated cooldowns to results, and passed execution contexts to Retry-After annotation. Boolean-only matcher checks discard the cooldown explicitly.
-- `sdk/cliproxy/auth/conductor_stream.go`: took upstream attempt cancellation, bootstrap/header handling, and continuation behavior; adapted matcher calls with fork cooldown propagation and context-aware Retry-After annotation while preserving Codex stream-bootstrap buffering and failover semantics.
-- Upstream changes to selector, cooldown, Home, config types, management identity, and related executor surfaces were auto-merged and require re-checking against CPA-001, CPA-003, CPA-007, CPA-010, CPA-011, CPA-012, and the read-only management divergence; no retirement condition is met.
+- `internal/api/handlers/management/config_v8.go`: kept upstream document-preserving YAML GET output, content-type selection, and projected server identity while retaining the fork's always-redacted management view, API-key auth-index injection, and TURN username/credential removal in every document.
+- `internal/config/parse.go`: the startup parser already enforces `ValidateCodexCreditResetDays`; no duplicate restoration in `config_load.go` is needed.
+- `internal/runtime/executor/helps/cache_observation.go`: a changed `CacheObservationConfig` now starts a new finite capture scope instead of silently rejecting the new configuration while an old scope is active. The helper test covers scope replacement, and the executor wire/usage test passes repeated in-process runs.
+- `sdk/cliproxy/auth/conductor_execution.go`: fork-specific three-value cooldown propagation, Retry-After execution context, persisted cooldowns, key/model cooldowns, and related upstream execution behavior remain present.
+- `sdk/cliproxy/auth/conductor_stream.go`: Codex stream-bootstrap buffering, continuation behavior, and cooldown propagation remain present.
+- Re-check complete: CPA-001 through CPA-012, the read-only management divergence, upstream sync surfaces, cache-observation executor/helper tests, and later-document YAML redaction are covered by the candidate verification commands below; no retirement condition is met.
 
 Activation covers the local CPA service only. This source candidate is for review; no installer, configuration, service restart, or provider canary is part of the sync. The source gate is `bin/ci gate`.
 
@@ -323,6 +324,6 @@ Inherited at released upstream `v8.0.60` (`91e0dee827abf476f9f86246f68c500a112f7
 
 Upstream release `v8.1.1` (`6eb8554f`) is merged over fork sync head `31ad6e0d` as merge commit `90f43b89`. The merge was conflict-free; upstream's Antigravity, Devin, Copilot, pluginhost scheduler, registry, session identity, Codex Responses, and dependency updates are retained. No new request-scoped matcher call sites required adaptation; fork-specific three-value cooldown propagation, Retry-After execution context, persisted cooldowns, key/model cooldowns, Codex stream-bootstrap buffering, Codex credit park, tier-locked affinity, and read-only management behavior remain present.
 
-The v8.1.0 executor regression was reproduced on the merged candidate and repaired at its root cause; the exact test name, diagnosis, and focused log are recorded with candidate verification. The management YAML GET path now decodes, redacts, and re-encodes every YAML document rather than preserving later documents verbatim. `TestConfigV8YAMLGetRedactsSecretsInLaterDocuments` covers a secret in a later document. The redundant `ValidateCodexCreditResetDays` call in `internal/config/config_load.go` was removed because `parse.go` already validates it.
+The v8.1.0 executor regression was reproduced on the merged candidate and repaired at its root cause; the exact test name, diagnosis, and focused log are recorded with candidate verification. `EncodeConfigDocuments` byte-preserves later documents only when they remain unchanged after redaction, judged by `reflect.DeepEqual` against a fresh decode; if a later document changes, the stream is re-encoded. `TestConfigV8YAMLGetRedactsSecretsInLaterDocuments` covers later-document presence, management masking, and TURN username removal. The redundant `ValidateCodexCreditResetDays` call in `internal/config/config_load.go` was removed because `parse.go` already validates it.
 
 Patch retirement re-check: CPA-001 through CPA-012 and the read-only management divergence remain required at v8.1.1; no released upstream equivalent satisfies their complete regression contracts. The fork workflow-guard removal remains intentional and unchanged. Source synchronization does not authorize installation, restart, or runtime/configuration changes.

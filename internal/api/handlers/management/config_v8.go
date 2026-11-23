@@ -75,15 +75,18 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		if !yamlRequest {
 			h.injectV8APIKeyAuthIndexesLocked(root, data)
 		}
-		// Secret visibility is independent of management write access.
-		redactReadOnlyYAMLNode(root)
-		for _, later := range docs[1:] {
-			redactReadOnlyYAMLNode(later)
-		}
-		if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
-			for _, server := range servers.Content {
-				deleteConfigV8Path(server, []string{"username"})
-				deleteConfigV8Path(server, []string{"credential"})
+		// Secret visibility is independent of management write access. Apply
+		// the TURN cleanup to every document, not only the runtime document.
+		for _, current := range docs {
+			redactReadOnlyYAMLNode(current)
+			if len(current.Content) == 0 {
+				continue
+			}
+			if servers := configV8Node(current.Content[0], v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
+				for _, server := range servers.Content {
+					deleteConfigV8Path(server, []string{"username"})
+					deleteConfigV8Path(server, []string{"credential"})
+				}
 			}
 		}
 		value := configV8Node(root, parts)
