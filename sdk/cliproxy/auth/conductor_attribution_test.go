@@ -97,6 +97,9 @@ func TestManagerLogsStableCredentialAttributionAtInfo(t *testing.T) {
 				if !strings.Contains(string(rendered), `auth_index="`+index+`"`) {
 					t.Fatalf("formatter dropped auth_index: %s", rendered)
 				}
+				if !strings.Contains(string(rendered), `request_class=unclassified`) {
+					t.Fatalf("formatter dropped request_class: %s", rendered)
+				}
 				for _, key := range keys {
 					if strings.Contains(string(rendered), key) {
 						t.Fatal("selection log exposed an API key")
