@@ -14,6 +14,10 @@ Patch review:
 
 Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
+## Intermediate candidate: v8.1.0 part 1
+
+Upstream first-parent commit `80fb55d8ebaf9a17ed19b7278074d83e71a0214f` (`fix(antigravity): honor explicit lower and zero max-idle-conns-per-host pool limits`, position 29 of 47 after `v8.0.80`) is merged over fork main as the intermediate sync. The split keeps each review receipt below the 2 MB limit: the part-1 diff is 1,279,200 bytes and the remaining delta to the reviewed v8.1.1 tree is 1,837,108 bytes. Conflicts in `sdk/cliproxy/auth/conductor_execution.go` and `sdk/cliproxy/auth/conductor_stream.go` combine upstream stream/verification changes with the fork's three-value request-scoped cooldown propagation, execution-context Retry-After annotation, and Codex bootstrap/failover behavior. No multi-document management YAML change is in this range; the fork's read-only redaction remains unchanged.
+
 ## Background
 
 Maintained fork: `0xble/CLIProxyAPI` of `router-for-me/CLIProxyAPI`.
