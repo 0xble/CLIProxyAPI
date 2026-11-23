@@ -1289,7 +1289,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 
 		entry := logEntryWithRequestID(ctx)
-		logAuthSelection(entry, auth, provider, routeModel)
+		logAuthSelection(ctx, entry, auth, provider, routeModel)
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		execCtx = m.WithAuthTransport(execCtx, auth)
@@ -1590,7 +1590,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 
 		entry := logEntryWithRequestID(ctx)
-		logAuthSelection(entry, auth, provider, routeModel)
+		logAuthSelection(ctx, entry, auth, provider, routeModel)
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		execCtx = m.WithAuthTransport(execCtx, auth)
@@ -2003,7 +2003,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 
 		entry := logEntryWithRequestID(ctx)
-		logAuthSelection(entry, auth, provider, routeModel)
+		logAuthSelection(ctx, entry, auth, provider, routeModel)
 		if selection != nil {
 			if errRuntimeAuth := m.bindHomeSelectionRuntimeAuth(ctx, opts, selection); errRuntimeAuth != nil {
 				selection.End("runtime_auth_bind_failed")
@@ -3423,7 +3423,7 @@ func logEntryWithRequestID(ctx context.Context) *log.Entry {
 	return log.NewEntry(log.StandardLogger())
 }
 
-func logAuthSelection(entry *log.Entry, auth *Auth, provider string, model string) {
+func logAuthSelection(ctx context.Context, entry *log.Entry, auth *Auth, provider string, model string) {
 	if !log.IsLevelEnabled(log.InfoLevel) {
 		return
 	}
@@ -3433,9 +3433,10 @@ func logAuthSelection(entry *log.Entry, auth *Auth, provider string, model strin
 	// Reuse the management/usage index for default-level attribution. Do not
 	// expose the auth ID, account identity, or API key in this event.
 	entry.WithFields(log.Fields{
-		"auth_index": auth.Index,
-		"provider":   provider,
-		"model":      model,
+		"auth_index":    auth.Index,
+		"provider":      provider,
+		"model":         model,
+		"request_class": requestClassFromContext(ctx),
 	}).Info("Selected upstream credential")
 	if !log.IsLevelEnabled(log.DebugLevel) {
 		return
