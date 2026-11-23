@@ -151,12 +151,20 @@ func requestClassFromContext(ctx context.Context) string {
 // SDK callers may supply the hint in Options. Strip it without mutating their
 // headers, even when shaping is inactive. An inbound handler hint takes precedence.
 func (m *Manager) consumeTrafficClass(ctx context.Context, opts cliproxyexecutor.Options, countOnly bool) (context.Context, cliproxyexecutor.Options) {
-	background, classified := ctx.Value(trafficClassKey{}).(bool)
+	background := false
+	classified := false
+	if bg, ok := ctx.Value(trafficClassKey{}).(bool); ok {
+		background = bg
+		classified = true
+	}
 	if hasTrafficClassHint(opts.Headers) {
 		opts.Headers = opts.Headers.Clone()
 		classifiedCtx := ConsumeTrafficClassHeader(ctx, opts.Headers)
 		if !classified {
-			background, classified = classifiedCtx.Value(trafficClassKey{}).(bool)
+			if bg, ok := classifiedCtx.Value(trafficClassKey{}).(bool); ok {
+				background = bg
+				classified = true
+			}
 		}
 	}
 	request := &trafficRequest{background: background, classified: classified, enabled: !m.HomeEnabled(), countOnly: countOnly}

@@ -171,6 +171,23 @@ func TestRequestClassAttribution(t *testing.T) {
 			}
 		})
 	}
+	t.Run("handler-class-takes-precedence", func(t *testing.T) {
+		hook.Reset()
+		ctx := context.WithValue(logging.WithRequestID(context.Background(), "class-precedence"), trafficClassKey{}, false)
+		opts := cliproxyexecutor.Options{Headers: http.Header{requestClassHeader: []string{"background"}}}
+		if _, err := manager.Execute(ctx, []string{"claude"}, cliproxyexecutor.Request{Model: model}, opts); err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range hook.AllEntries() {
+			if entry.Message == "Selected upstream credential" {
+				if got := entry.Data["request_class"]; got != "interactive" {
+					t.Fatalf("request_class = %v, want interactive", got)
+				}
+				return
+			}
+		}
+		t.Fatal("missing selection log")
+	})
 	for _, c := range cases {
 		t.Run(c.name+"-again", func(t *testing.T) {
 			req := cliproxyexecutor.Request{Model: model}
