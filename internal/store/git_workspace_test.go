@@ -121,7 +121,7 @@ func TestGitPushLeaseIsPinnedBeforeIndependentFetch(t *testing.T) {
 		if _, errSave := b.Save(context.Background(), &cliproxyauth.Auth{ID: "peer.json", Metadata: map[string]any{"type": "codex"}}); errSave != nil {
 			t.Fatal(errSave)
 		}
-		nativeStoreGit(t, dir, "fetch", "origin")
+		nativeStoreGit(t, dir, "-c", "gc.auto=0", "fetch", "origin")
 		if tracked := nativeStoreGit(t, dir, "rev-parse", "origin/master"); tracked == base {
 			t.Fatal("independent fetch did not advance the tracking ref")
 		}

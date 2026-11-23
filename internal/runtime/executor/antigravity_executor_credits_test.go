@@ -972,6 +972,23 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 				}
 			}
 
+			deadline := time.NewTimer(5 * time.Second)
+			defer deadline.Stop()
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			var hintOK bool
+			for {
+				hint, hintOK = cliproxyauth.GetAntigravityCreditsHint(authID, registered.RegistrationEpoch)
+				if hintOK && hint.Known && hint.Available && hint.CreditAmount == 2516 {
+					break
+				}
+				select {
+				case <-ticker.C:
+				case <-deadline.C:
+					t.Fatalf("timed out waiting for recovered credits hint = %#v (ok=%v), loadCodeAssist calls=%d", hint, hintOK, loadCodeAssistCalls.Load())
+				}
+			}
+
 			if value, ok := antigravityCreditsHintRefreshByID.Load(authID); ok {
 				if state, ok := value.(*antigravityCreditsHintRefreshState); ok && state != nil {
 					waitForAntigravityCreditsRefresh(t, state)
