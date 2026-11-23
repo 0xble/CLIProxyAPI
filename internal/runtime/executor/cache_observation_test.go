@@ -37,7 +37,7 @@ func TestProviderCacheObservationWireAndUsage(t *testing.T) {
 	capture := &observerUsageCapture{alias: alias, records: make(chan usage.Record, 32)}
 	usage.RegisterNamedPlugin(alias, capture)
 	t.Cleanup(func() { usage.RegisterNamedPlugin(alias, codexResponseModelNoopUsagePlugin{}) })
-	session := "cache-observer-executor-fixture"
+	session := "cache-observer-executor-fixture-" + strings.ReplaceAll(t.Name(), "/", "-")
 	cfg := &config.Config{CacheObservation: &config.CacheObservationConfig{
 		SessionID: session, ExpiresAt: time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339), MaxAttempts: 20,
 	}}

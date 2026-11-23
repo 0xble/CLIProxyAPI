@@ -20,6 +20,37 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestConfigV8YAMLGetRedactsSecretsInLaterDocuments(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "config-version: 8\nserver: {port: 8317}\nmanagement: {secret-key: first-secret}\n---\nmanagement: {secret-key: later-secret}\n"
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	router := gin.New()
+	router.GET("/v8/management/config.yaml", h.ConfigV8)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v8/management/config.yaml", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET config.yaml: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, secret := range []string{"first-secret", "later-secret"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("GET config.yaml leaked %q: %s", secret, body)
+		}
+	}
+	if !strings.Contains(body, managementSecretMask) {
+		t.Fatalf("GET config.yaml did not redact multi-document secrets: %s", body)
+	}
+}
+
 func TestConfigV8MigrationAndLegacyAPI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "config.yaml")

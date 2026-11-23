@@ -677,6 +677,9 @@ func (r *UsageReporter) EnsurePublished(ctx context.Context) {
 // publishAttemptRecord emits the record for one upstream attempt and the
 // observability warnings that belong to the attempt rather than to a single event.
 func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.Record) {
+	if r.cacheObservation != nil {
+		record.RequestID = r.RequestID()
+	}
 	r.publishCacheObservation(record)
 	r.publishRecord(ctx, record)
 	r.warnModelSubstitution(ctx)

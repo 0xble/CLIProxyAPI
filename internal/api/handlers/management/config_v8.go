@@ -46,11 +46,16 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
-	doc, err := config.DecodeFirstConfigDocument(data)
+	docs, err := config.DecodeConfigDocuments(data)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
 		return
 	}
+	if len(docs) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
+		return
+	}
+	doc := docs[0]
 	root := doc.Content[0]
 	path := strings.Trim(c.Param("path"), "/")
 	parts := []string{}
@@ -72,6 +77,9 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		}
 		// Secret visibility is independent of management write access.
 		redactReadOnlyYAMLNode(root)
+		for _, later := range docs[1:] {
+			redactReadOnlyYAMLNode(later)
+		}
 		if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
 			for _, server := range servers.Content {
 				deleteConfigV8Path(server, []string{"username"})
@@ -86,7 +94,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		c.Header("ETag", configV8ETag(diskHash))
 		if yamlRequest {
-			data, err = config.ReplaceFirstConfigDocument(data, doc)
+			data, err = config.EncodeConfigDocuments(data, docs)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config", "message": err.Error()})
 				return

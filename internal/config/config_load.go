@@ -85,9 +85,6 @@ func loadConfigFile(configFile string, optional, forUpload bool) (cfg *Config, s
 			log.Debug("configuration is read-only; startup rewrites were not persisted")
 			committed = file.snapshot
 		}
-		if errValidate := cfg.ValidateCodexCreditResetDays(); errValidate != nil {
-			return errValidate
-		}
 		if !generated {
 			forgetEphemeralServerID(file.snapshot.info)
 		}

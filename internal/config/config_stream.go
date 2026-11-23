@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"unicode/utf16"
 
@@ -12,10 +13,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DecodeConfigDocuments validates and returns every document in the YAML stream.
+func DecodeConfigDocuments(data []byte) ([]*yaml.Node, error) {
+	return decodeConfigStream(data)
+}
+
 // DecodeFirstConfigDocument validates the complete YAML stream before returning
-// its first document. Runtime settings come only from the first document.
+// its first document.
 func DecodeFirstConfigDocument(data []byte) (*yaml.Node, error) {
-	docs, err := decodeConfigStream(data)
+	docs, err := DecodeConfigDocuments(data)
 	if err != nil {
 		return nil, err
 	}
@@ -28,11 +34,53 @@ func DecodeFirstConfigDocument(data []byte) (*yaml.Node, error) {
 // ReplaceFirstConfigDocument encodes the edited document and copies the rest
 // of the original YAML stream byte-for-byte.
 func ReplaceFirstConfigDocument(original []byte, doc *yaml.Node) ([]byte, error) {
-	docs, err := decodeConfigStream(original)
+	docs, err := DecodeConfigDocuments(original)
 	if err != nil {
 		return nil, err
 	}
 	return encodeConfigDocument(doc, original, docs)
+}
+
+// EncodeConfigDocuments encodes every document in a YAML stream. It is used for
+// read-only views that must transform documents beyond the runtime document.
+func EncodeConfigDocuments(original []byte, docs []*yaml.Node) ([]byte, error) {
+	originalDocs, err := DecodeConfigDocuments(original)
+	if err != nil {
+		return nil, err
+	}
+	if len(originalDocs) != len(docs) {
+		return nil, fmt.Errorf("config document count changed")
+	}
+	laterUnchanged := true
+	for index := 1; index < len(docs); index++ {
+		if !reflect.DeepEqual(originalDocs[index], docs[index]) {
+			laterUnchanged = false
+			break
+		}
+	}
+	if laterUnchanged {
+		return encodeConfigDocument(docs[0], original, originalDocs)
+	}
+	var utf8 bytes.Buffer
+	encoder := yaml.NewEncoder(&utf8)
+	encoder.SetIndent(2)
+	for _, doc := range docs {
+		if err := encoder.Encode(doc); err != nil {
+			_ = encoder.Close()
+			return nil, err
+		}
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, err
+	}
+	encoded := configUTF16Encoding(original)
+	if encoded != nil {
+		return encoded.NewEncoder().Bytes(utf8.Bytes())
+	}
+	if bytes.HasPrefix(original, []byte{0xef, 0xbb, 0xbf}) {
+		return append([]byte{0xef, 0xbb, 0xbf}, utf8.Bytes()...), nil
+	}
+	return utf8.Bytes(), nil
 }
 
 // Decode the entire stream, including alias and mapping validation in documents
