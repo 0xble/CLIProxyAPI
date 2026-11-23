@@ -187,6 +187,18 @@ func (c *Catalog) resolve(preset *registry.ModelInfo) (Route, bool) {
 	return model.route(preset, false)
 }
 
+// HomeRoute applies CLI compatibility to the model selected by Home.
+func HomeRoute(modelID string, info *registry.ModelInfo) (Route, bool) {
+	selected := registry.ModelInfo{ID: modelID}
+	// Older Homes send native IDs; newer Homes send canonical provider-qualified IDs.
+	if info != nil && strings.TrimPrefix(info.ID, ModelPrefix) == modelID {
+		selected = *info
+		selected.ID = modelID
+		selected.SupportedInputModalities = slices.Clone(info.SupportedInputModalities)
+	}
+	return (Model{ID: modelID}).route(&selected, true)
+}
+
 type Route struct {
 	SystemPrompt       string
 	Endpoint           string

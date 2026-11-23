@@ -100,7 +100,10 @@ func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *clip
 		}
 		preparedErr := prepareAntigravityProjectIDError(errProject)
 		if preparedErr.tosViolation {
+			closeAntigravityAuthIdleTransports(updated)
 			e.applyAntigravityTOSState(e.cfg, updated, antigravityResponseBodyFromError(errProject))
+		} else if preparedErr.code == http.StatusForbidden && cliproxyauth.IsAntigravityValidationRequiredError(preparedErr) {
+			closeAntigravityAuthIdleTransports(updated)
 		}
 		return nil, preparedErr
 	}
@@ -126,7 +129,7 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 
 func (e *AntigravityExecutor) ensureAccessTokenWithOptions(ctx context.Context, auth *cliproxyauth.Auth, discoverProject bool) (string, *cliproxyauth.Auth, bool, error) {
 	if auth == nil {
-		return "", nil, false, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
+		return "", nil, false, statusErr{code: http.StatusUnauthorized, msg: "missing auth", credentialScoped: true}
 	}
 	if !antigravityNeedsAccessTokenRefresh(auth) {
 		accessToken := metaStringValue(auth.Metadata, "access_token")
@@ -148,7 +151,7 @@ func (e *AntigravityExecutor) ensureAccessTokenWithOptions(ctx context.Context, 
 			}
 			token := metaStringValue(refreshed.Metadata, "access_token")
 			if strings.TrimSpace(token) == "" {
-				return nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
+				return nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token", credentialScoped: true}
 			}
 			refreshedViaHome = true
 			if discoverProject {
@@ -175,7 +178,7 @@ func (e *AntigravityExecutor) ensureAccessTokenWithOptions(ctx context.Context, 
 	}
 	token := metaStringValue(updated.Metadata, "access_token")
 	if strings.TrimSpace(token) == "" {
-		return "", nil, false, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
+		return "", nil, false, statusErr{code: http.StatusUnauthorized, msg: "missing access token", credentialScoped: true}
 	}
 	if discoverProject && !refreshedLocal && !refreshedViaHome {
 		e.maybeRefreshAntigravityCreditsHint(ctx, updated, token)
@@ -189,11 +192,11 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 
 func (e *AntigravityExecutor) refreshTokenWithOptions(ctx context.Context, auth *cliproxyauth.Auth, requestCtx context.Context, discoverProject bool) (*cliproxyauth.Auth, error) {
 	if auth == nil {
-		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
+		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth", credentialScoped: true}
 	}
 	refreshToken := metaStringValue(auth.Metadata, "refresh_token")
 	if refreshToken == "" {
-		return auth, statusErr{code: http.StatusUnauthorized, msg: "missing refresh token"}
+		return auth, statusErr{code: http.StatusUnauthorized, msg: "missing refresh token", credentialScoped: true}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -233,7 +236,7 @@ func (e *AntigravityExecutor) refreshTokenWithOptions(ctx context.Context, auth 
 	auth.Metadata["timestamp"] = now.UnixMilli()
 	auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
 	auth.Metadata["type"] = antigravityAuthType
-	if discoverProject {
+	if discoverProject && !isAntigravityAuthDisabled(auth) {
 		if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
 			log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
 		}
@@ -353,8 +356,33 @@ func newAntigravityOAuthHTTPClient(ctx context.Context, cfg *config.Config, auth
 	return client, cleanup
 }
 
+// newAntigravityProjectDiscoveryHTTPClient clones the credential's HTTP/1.1
+// Antigravity transport into an isolated per-discovery client whose cleanup
+// closes idle sockets and cancels abandoned in-flight dials (such as a stalled
+// SOCKS5 handshake after net/http.Transport.getConn detaches req.Context())
+// without disturbing the credential's shared connection pool.
+func newAntigravityProjectDiscoveryHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) (clientOut *http.Client, cleanup func()) {
+	cleanup = func() {}
+	defer func() { clientOut = httptransport.Decorate(ctx, clientOut) }()
+
+	client := newAntigravityHTTPClient(httptransport.WithoutDecorator(ctx), cfg, auth, 0)
+	if client == nil {
+		return &http.Client{}, cleanup
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		return client, cleanup
+	}
+	owned := transport.Clone()
+	owned.MaxIdleConnsPerHost = -1
+	clone := *client
+	clone.Transport = owned
+	cleanup = owned.CloseIdleConnections
+	return &clone, cleanup
+}
+
 func (e *AntigravityExecutor) ensureAntigravityProjectID(ctx context.Context, auth *cliproxyauth.Auth, accessToken string) error {
-	if auth == nil {
+	if isAntigravityAuthDisabled(auth) {
 		return nil
 	}
 
@@ -393,7 +421,8 @@ func (e *AntigravityExecutor) fetchAntigravityProjectID(ctx context.Context, aut
 	// Exclude execution-scoped request proxy overrides while preserving caller cancellation.
 	acquisitionCtx, cancelAcquisition := context.WithTimeout(cliproxyexecutor.WithoutRequestProxyURL(ctx), antigravityCredentialAcquisitionTimeout)
 	defer cancelAcquisition()
-	httpClient := newAntigravityHTTPClient(acquisitionCtx, e.cfg, auth, 0)
+	httpClient, cleanup := newAntigravityProjectDiscoveryHTTPClient(acquisitionCtx, e.cfg, auth)
+	defer cleanup()
 	tracedClient := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "project_discovery")
 	projectID, errFetch := sdkAuth.FetchAntigravityProjectID(acquisitionCtx, token, tracedClient)
 	if errFetch != nil {

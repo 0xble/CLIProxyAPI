@@ -21,7 +21,7 @@ import (
 )
 
 // Capture is process-local and finite. Reloading the same configuration does not
-// reset its budget. A different capture cannot displace an unexpired capture.
+// reset its budget. A changed configuration starts a new capture session.
 var cacheCapture = struct {
 	sync.Mutex
 	active *cacheCaptureScope
@@ -102,7 +102,7 @@ func beginCacheCapture(c config.CacheObservationConfig, session string, now time
 	cacheCapture.Lock()
 	defer cacheCapture.Unlock()
 	s := cacheCapture.active
-	if s == nil || !now.Before(s.expires) {
+	if s == nil || !now.Before(s.expires) || s.config != c {
 		s = &cacheCaptureScope{config: c, expires: expires}
 		if _, errRandom := rand.Read(s.key[:]); errRandom != nil {
 			return nil

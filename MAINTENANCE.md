@@ -1,6 +1,23 @@
 # Maintenance
 
-## Current candidate: v8.0.80
+## Current candidate: v8.1.1
+
+Upstream release `v8.1.1` (`6eb8554f`) is merged over fork sync head `31ad6e0d` as merge commit `90f43b89`, with follow-up fixes on this branch. The merge was conflict-free; upstream's Antigravity, Devin, Copilot, pluginhost scheduler, registry, session identity, Codex Responses, and dependency updates are retained. No active patch was retired.
+
+v8.1.1 changes reviewed: the upstream provider, registry, scheduler, session-identity, Codex Responses, and dependency updates; the fork's cooldown, credit-park, affinity, redaction, cache-observation, and load-validation behavior; and management YAML document-preserving reads. The executor cache-observation regression is fixed at its process-global scope replacement root cause, and management YAML redaction now applies TURN cleanup to every document while preserving later-document presence.
+
+Patch review:
+
+- `internal/api/handlers/management/config_v8.go`: kept upstream document-preserving YAML GET output, content-type selection, and projected server identity while retaining the fork's always-redacted management view, API-key auth-index injection, and TURN username/credential removal in every document.
+- `internal/config/parse.go`: the startup parser already enforces `ValidateCodexCreditResetDays`; no duplicate restoration in `config_load.go` is needed.
+- `internal/runtime/executor/helps/cache_observation.go`: a changed `CacheObservationConfig` now starts a new finite capture scope instead of silently rejecting the new configuration while an old scope is active. The helper test covers scope replacement, and the executor wire/usage test passes repeated in-process runs.
+- `sdk/cliproxy/auth/conductor_execution.go`: fork-specific three-value cooldown propagation, Retry-After execution context, persisted cooldowns, key/model cooldowns, and related upstream execution behavior remain present.
+- `sdk/cliproxy/auth/conductor_stream.go`: Codex stream-bootstrap buffering, continuation behavior, and cooldown propagation remain present.
+- Re-check complete: CPA-001 through CPA-012, the read-only management divergence, upstream sync surfaces, cache-observation executor/helper tests, and later-document YAML redaction are covered by the candidate verification logs; no retirement condition is met.
+
+Activation covers the local CPA service only. This source candidate is for review; no installer, configuration, service restart, or provider canary is part of the sync. The source gate is `bin/ci gate`.
+
+## Prior candidate: v8.0.80
 
 Upstream release `v8.0.80` (`f5c5681a`) is merged over fork main `7cfb5a0d` (v8.0.79 plus CPA-001 through CPA-012 and account traffic shaping). One textual conflict, plus 7 semantic call-site adaptations.
 
@@ -306,3 +323,13 @@ Inherited at released upstream `v8.0.60` (`91e0dee827abf476f9f86246f68c500a112f7
 - Counts are per credential and per process: a rolling hour of selected requests including retries, and distinct session IDs seen in the last 15 minutes. Token-count requests do not consume either budget. Existing interactive bindings are exempt from all soft limits. New interactive bindings prefer accounts within limits, but override soft gates when necessary within the highest hard-available priority tier. Soft gates never trigger lower-tier spillover. Existing background bindings are exempt from the session and schedule gates, not from the hourly or weekly limits. If a bound account hits a soft limit on a background request, the proxy defers the request without failing or rebinding the session. Background deferral is `503` with `Retry-After` after at most 60 seconds of policy wait.
 - An opt-in account covers midnight–07:00 Pacific; the others sleep for new bindings, with a staggered 07:00 background release. The night account rests until 13:00. A credential with spare quota that resets within 24 hours can skip sleep. The reserve is 15% normally, 5% in the last day, and 0% for interactive work in the last six hours, given the example configuration. A below-reserve account needs two percentage points of headroom to re-enter during the same band.
 - The suggested 500 requests/hour rounds up a 479/hour p95 (1,597 max) from 44,117 deduplicated Claude Code assistant responses in 405 active session-hour bins. Responses are a proxy for requests, not a provider limit; concurrent sessions can exceed the per-account cap in aggregate. Start at three active sessions as an uncalibrated pilot value. No policy is enabled by default.
+
+## v8.1.1 sync record
+
+Upstream release `v8.1.1` (`6eb8554f`) is merged over fork sync head `31ad6e0d` as merge commit `90f43b89`. The merge was conflict-free; upstream's Antigravity, Devin, Copilot, pluginhost scheduler, registry, session identity, Codex Responses, and dependency updates are retained. No new request-scoped matcher call sites required adaptation; fork-specific three-value cooldown propagation, Retry-After execution context, persisted cooldowns, key/model cooldowns, Codex stream-bootstrap buffering, Codex credit park, tier-locked affinity, and read-only management behavior remain present.
+
+The v8.1.0 executor regression was reproduced on the merged candidate and repaired at its root cause; the exact test name, diagnosis, and focused log are recorded with candidate verification. `EncodeConfigDocuments` byte-preserves later documents only when they remain unchanged after redaction, judged by `reflect.DeepEqual` against a fresh decode; if a later document changes, the stream is re-encoded. `TestConfigV8YAMLGetRedactsSecretsInLaterDocuments` covers later-document presence, management masking, and TURN username removal. The redundant `ValidateCodexCreditResetDays` call in `internal/config/config_load.go` was removed because `parse.go` already validates it.
+
+The two gate failures were classified against detached trees: `TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCooldown` failed on the sync head and pure upstream `v8.1.1`, while the pre-v8.1.1 fork base passed; it was an upstream async-test race, not a fork merge regression. The test now waits for the recovered credits hint condition rather than reading immediately after scheduling background refresh. `TestGitPushLeaseIsPinnedBeforeIndependentFetch` failed intermittently on the sync head and pure upstream `v8.1.1` (the pre-v8.1.1 base predates the test); native Git's independent fetch could trigger auto-GC while go-git held pack handles, so the test disables unrelated `gc.auto` during that fetch while retaining the tracking-ref and lease assertions. Focused `-count=50` verification passes for both tests; logs are under `/Users/brianle/.hermes/cache/scratch/cpa-fixed2-antigravity-count50.log` and `/Users/brianle/.hermes/cache/scratch/cpa-fixed3-store-count50.log`.
+
+Patch retirement re-check: CPA-001 through CPA-012 and the read-only management divergence remain required at v8.1.1; no released upstream equivalent satisfies their complete regression contracts. The fork workflow-guard removal remains intentional and unchanged. Source synchronization does not authorize installation, restart, or runtime/configuration changes.
