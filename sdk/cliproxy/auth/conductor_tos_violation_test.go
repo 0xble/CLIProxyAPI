@@ -27,7 +27,7 @@ func TestApplyAuthFailureState_TOSViolationIsAlwaysTerminal(t *testing.T) {
 				HTTPStatus: tt.httpStatus,
 				Code:       "tos_violation",
 				Message:    "TOS_VIOLATION",
-			}, nil, now, tt.disableCooling)
+			}, nil, 0, now, tt.disableCooling, nil)
 
 			if !auth.Disabled || auth.Status != StatusDisabled {
 				t.Fatalf("disabled=%v status=%q, want true / %q", auth.Disabled, auth.Status, StatusDisabled)

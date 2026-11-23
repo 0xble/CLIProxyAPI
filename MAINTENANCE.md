@@ -1,35 +1,18 @@
 # Maintenance
 
-## Current candidate: v8.1.1
+## Current candidate: v8.1.2
 
-Upstream release `v8.1.1` (`6eb8554f`) is merged over fork sync head `31ad6e0d` as merge commit `90f43b89`, with follow-up fixes on this branch. The merge was conflict-free; upstream's Antigravity, Devin, Copilot, pluginhost scheduler, registry, session identity, Codex Responses, and dependency updates are retained. No active patch was retired.
+Upstream release `v8.1.2` (`85225381d`) is merged over fork main `8193b55c8` as real merge commit `313192ecb` on branch chore/sync-v8-1-2 (worktree /Users/brianle/Repos/CLIProxyAPI/.worktrees/sync-v8-1-2). Merge command: `git merge --no-ff v8.1.2`. One conflict auto-resolved by mergiraf in `sdk/cliproxy/auth/conductor_request_scoped_errors.go` (the matchRequestScopedErrorAction / matchRequestScopedErrorRules three-value (action, cooldown, ok) form with cooldown propagation, Retry-After exec context annotation, persisted cooldowns, and key×model request-scoped cooldowns were preserved from fork). No other conflicts. Fork invariants for Codex stream-bootstrap buffering/failover (checked vs upstream f5ef0c0f8 stream bootstrap attempt identity), CPA-012 Codex credit park, tier-locked session affinity (checked vs upstream ee5225e16 parent affinity preservation), management read-only redaction across all YAML documents, and cache-observation scope replacement on config change all retained.
 
-v8.1.1 changes reviewed: the upstream provider, registry, scheduler, session-identity, Codex Responses, and dependency updates; the fork's cooldown, credit-park, affinity, redaction, cache-observation, and load-validation behavior; and management YAML document-preserving reads. The executor cache-observation regression is fixed at its process-global scope replacement root cause, and management YAML redaction now applies TURN cleanup to every document while preserving later-document presence.
+Re-check of fork patches vs v8.1.2: after inspecting antigravity/gemini/thinking/translator fixes and the listed auth commits (ee5225e16, f5ef0c0f8, 14cc6ad1c, 8e0641c9c/8860264bc), none of CPA-001..CPA-012 are equivalent in upstream; all retained (noted here; none removed). v8.1.2 changes reviewed: upstream antigravity/gemini/thinking/translator/auth fixes; fork's request-scoped cooldown, credit-park, affinity, redaction, cache-observation, and load-validation behavior; management YAML document-preserving reads. The conductor_request_scoped_errors conflict resolution and other auto-merges preserve the invariants listed in task.
 
-Patch review:
-
-- `internal/api/handlers/management/config_v8.go`: kept upstream document-preserving YAML GET output, content-type selection, and projected server identity while retaining the fork's always-redacted management view, API-key auth-index injection, and TURN username/credential removal in every document.
-- `internal/config/parse.go`: the startup parser already enforces `ValidateCodexCreditResetDays`; no duplicate restoration in `config_load.go` is needed.
-- `internal/runtime/executor/helps/cache_observation.go`: a changed `CacheObservationConfig` now starts a new finite capture scope instead of silently rejecting the new configuration while an old scope is active. The helper test covers scope replacement, and the executor wire/usage test passes repeated in-process runs.
-- `sdk/cliproxy/auth/conductor_execution.go`: fork-specific three-value cooldown propagation, Retry-After execution context, persisted cooldowns, key/model cooldowns, and related upstream execution behavior remain present.
-- `sdk/cliproxy/auth/conductor_stream.go`: Codex stream-bootstrap buffering, continuation behavior, and cooldown propagation remain present.
-- Re-check complete: CPA-001 through CPA-012, the read-only management divergence, upstream sync surfaces, cache-observation executor/helper tests, and later-document YAML redaction are covered by the candidate verification logs; no retirement condition is met.
+Patch review summary for this sync: conductor_request_scoped_errors.go conflict kept fork's three-value matcher and cooldown propagation; selector.go, conductor_*.go, codex_websockets_stream.go, and management redaction files show no regression in fork behavior.
 
 Activation covers the local CPA service only. This source candidate is for review; no installer, configuration, service restart, or provider canary is part of the sync. The source gate is `bin/ci gate`.
 
-## Prior candidate: v8.0.80
+## Prior candidate: v8.1.1
 
-Upstream release `v8.0.80` (`f5c5681a`) is merged over fork main `7cfb5a0d` (v8.0.79 plus CPA-001 through CPA-012 and account traffic shaping). One textual conflict, plus 7 semantic call-site adaptations.
-
-v8.0.80 changes reviewed: request auth preparation now honors request-scoped errors, Retry-After, and credential scope on `PrepareRequestAuth` failure and serializes with refresh locks; consistent cancellation and Retry-After cooldown handling; stream bootstrap Retry-After annotation scoped to the same upstream attempt; executeHome parity fixes; Responses output synthesis and refusal fallbacks for meta executors; gzip request bodies on Claude routes; Claude advisor blocks stripped after credential rebind; Antigravity OAuth refresh transport, 403 probe backoff, and credits fallback stop rules; Gemini 4 max completion tokens capped at 65536; credential-scoped after-auth plugin termination; and a regenerated Codex client catalog (#7697).
-
-Patch review:
-
-- Conflict in `internal/api/server_test.go`: upstream #7697 regenerated `codex_client_models.json` so gpt-5.5 offers the priority tier again and asserts it with `hasCodexServiceTier`. The fork's carried #7646 backport (upstream closed it unmerged) is dropped in favor of upstream's assertion.
-- Semantic adaptation (CPA-001): upstream added `matchRequestScopedErrorAction` call sites on the `PrepareRequestAuth` failure paths in `conductor_execution.go` (3), `conductor_home_execution.go` (1), and the Antigravity credits fallback in `conductor_home.go` (3), all written against upstream's two-value signature. They now use the fork's three-value form and pass the request-scoped cooldown to `applyRequestScopedActionToResult`, except the credits stream path, which never applies a result. The 4 new `annotateTrustedRetryAfterByHint` calls pass the execution context (Retry-After preservation across CPA hops).
-- v8.0.80 does not touch `selector.go`, `scheduler.go`, `quota_reserve.go`, `conductor_cooldown.go`, or the Codex terminal, stream, and websocket executors, so CPA-003, CPA-007, CPA-010, CPA-011, and CPA-012 hooks are unchanged.
-
-Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
+Upstream release `v8.1.1` merged over fork main as real merge commit (see prior entry in history for details). CPA-001 through CPA-012 retained after re-check; no patch retired. The v8.1.1 sync preserved all fork invariants listed in task for v8.1.2.
 
 ## Intermediate candidate: v8.1.0 part 1
 
