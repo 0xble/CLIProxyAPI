@@ -13,7 +13,7 @@ Patch review:
 - `internal/runtime/executor/helps/cache_observation.go`: a changed `CacheObservationConfig` now starts a new finite capture scope instead of silently rejecting the new configuration while an old scope is active. The helper test covers scope replacement, and the executor wire/usage test passes repeated in-process runs.
 - `sdk/cliproxy/auth/conductor_execution.go`: fork-specific three-value cooldown propagation, Retry-After execution context, persisted cooldowns, key/model cooldowns, and related upstream execution behavior remain present.
 - `sdk/cliproxy/auth/conductor_stream.go`: Codex stream-bootstrap buffering, continuation behavior, and cooldown propagation remain present.
-- Re-check complete: CPA-001 through CPA-012, the read-only management divergence, upstream sync surfaces, cache-observation executor/helper tests, and later-document YAML redaction are covered by the candidate verification commands below; no retirement condition is met.
+- Re-check complete: CPA-001 through CPA-012, the read-only management divergence, upstream sync surfaces, cache-observation executor/helper tests, and later-document YAML redaction are covered by the candidate verification logs; no retirement condition is met.
 
 Activation covers the local CPA service only. This source candidate is for review; no installer, configuration, service restart, or provider canary is part of the sync. The source gate is `bin/ci gate`.
 
