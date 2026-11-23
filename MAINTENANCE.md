@@ -2,17 +2,34 @@
 
 ## Current candidate: v8.1.2
 
-Upstream release `v8.1.2` (`85225381d`) is merged over fork main `8193b55c8` as real merge commit `313192ecb` on branch chore/sync-v8-1-2 (worktree /Users/brianle/Repos/CLIProxyAPI/.worktrees/sync-v8-1-2). Merge command: `git merge --no-ff v8.1.2`. One conflict auto-resolved by mergiraf in `sdk/cliproxy/auth/conductor_request_scoped_errors.go` (the matchRequestScopedErrorAction / matchRequestScopedErrorRules three-value (action, cooldown, ok) form with cooldown propagation, Retry-After exec context annotation, persisted cooldowns, and key×model request-scoped cooldowns were preserved from fork). No other conflicts. Fork invariants for Codex stream-bootstrap buffering/failover (checked vs upstream f5ef0c0f8 stream bootstrap attempt identity), CPA-012 Codex credit park, tier-locked session affinity (checked vs upstream ee5225e16 parent affinity preservation), management read-only redaction across all YAML documents, and cache-observation scope replacement on config change all retained.
+Upstream release `v8.1.2` (`85225381`) is merged over fork main `8193b55c` (v8.1.1 plus CPA-001 through CPA-012) as merge commit `313192ec`. One textual conflict, in `sdk/cliproxy/auth/conductor_request_scoped_errors.go`, plus semantic call-site adaptations.
 
-Re-check of fork patches vs v8.1.2: after inspecting antigravity/gemini/thinking/translator fixes and the listed auth commits (ee5225e16, f5ef0c0f8, 14cc6ad1c, 8e0641c9c/8860264bc), none of CPA-001..CPA-012 are equivalent in upstream; all retained (noted here; none removed). v8.1.2 changes reviewed: upstream antigravity/gemini/thinking/translator/auth fixes; fork's request-scoped cooldown, credit-park, affinity, redaction, cache-observation, and load-validation behavior; management YAML document-preserving reads. The conductor_request_scoped_errors conflict resolution and other auto-merges preserve the invariants listed in task.
+v8.1.2 changes reviewed: Antigravity, Gemini, thinking-budget, translator, Copilot, and Vertex fixes; auth changes `ee5225e1` (parent affinity after fork failure), `f5ef0c0f` (stream bootstrap attempt identity), `14cc6ad1` (terminal ToS-violation state), and `8e0641c9`/`8860264b` (Antigravity credits fallback after unauthorized and credential lockouts).
 
-Patch review summary for this sync: conductor_request_scoped_errors.go conflict kept fork's three-value matcher and cooldown propagation; selector.go, conductor_*.go, codex_websockets_stream.go, and management redaction files show no regression in fork behavior.
+Patch review:
 
-Activation covers the local CPA service only. This source candidate is for review; no installer, configuration, service restart, or provider canary is part of the sync. The source gate is `bin/ci gate`.
+- Conflict in `sdk/cliproxy/auth/conductor_request_scoped_errors.go`: upstream's new Antigravity target-rejected early return is written against the two-value matcher; it now returns the fork's three-value `("", 0, false)` (CPA-001).
+- Semantic adaptation: upstream's `TestApplyAuthFailureState_TOSViolationIsAlwaysTerminal` calls `applyAuthFailureState` with upstream's signature; it now passes the fork's cooldown duration and request-scoped arguments.
+- `f5ef0c0f` keeps attempt identity on stream bootstrap; the fork's Codex stream-bootstrap buffering and failover cooldown propagation remain intact.
+- `ee5225e1` preserves parent affinity after a fork failure; tier-locked session affinity is unchanged.
+- Re-check complete: no fork patch is equivalent in v8.1.2, so CPA-001 through CPA-012 remain.
+
+Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
 ## Prior candidate: v8.1.1
 
-Upstream release `v8.1.1` merged over fork main as real merge commit (see prior entry in history for details). CPA-001 through CPA-012 retained after re-check; no patch retired. The v8.1.1 sync preserved all fork invariants listed in task for v8.1.2.
+Upstream release `v8.1.1` (`6eb8554f`) is merged over fork sync head `31ad6e0d` as merge commit `90f43b89`, with follow-up fixes on this branch. The merge was conflict-free; upstream's Antigravity, Devin, Copilot, pluginhost scheduler, registry, session identity, Codex Responses, and dependency updates are retained. No active patch was retired.
+
+v8.1.1 changes reviewed: the upstream provider, registry, scheduler, session-identity, Codex Responses, and dependency updates; the fork's cooldown, credit-park, affinity, redaction, cache-observation, and load-validation behavior; and management YAML document-preserving reads. The executor cache-observation regression is fixed at its process-global scope replacement root cause, and management YAML redaction now applies TURN cleanup to every document while preserving later-document presence.
+
+Patch review:
+
+- `internal/api/handlers/management/config_v8.go`: kept upstream document-preserving YAML GET output, content-type selection, and projected server identity while retaining the fork's always-redacted management view, API-key auth-index injection, and TURN username/credential removal in every document.
+- `internal/config/parse.go`: the startup parser already enforces `ValidateCodexCreditResetDays`; no duplicate restoration in `config_load.go` is needed.
+- `internal/runtime/executor/helps/cache_observation.go`: a changed `CacheObservationConfig` now starts a new finite capture scope instead of silently rejecting the new configuration while an old scope is active. The helper test covers scope replacement, and the executor wire/usage test passes repeated in-process runs.
+- `sdk/cliproxy/auth/conductor_execution.go`: fork-specific three-value cooldown propagation, Retry-After execution context, persisted cooldowns, key/model cooldowns, and related upstream execution behavior remain present.
+- `sdk/cliproxy/auth/conductor_stream.go`: Codex stream-bootstrap buffering, continuation behavior, and cooldown propagation remain present.
+- Re-check complete: CPA-001 through CPA-012, the read-only management divergence, upstream sync surfaces, cache-observation executor/helper tests, and later-document YAML redaction are covered by the candidate verification logs; no retirement condition is met.
 
 ## Intermediate candidate: v8.1.0 part 1
 
