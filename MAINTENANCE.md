@@ -16,6 +16,10 @@ Patch review:
 
 Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
+Upstream bugs fixed (upstreamable, will be proposed upstream):
+- GeminiVertexExecutor nil pointer panic on scanner.Err() for imagen models (lines 1147/1563): added (isImagenModel(baseModel) || ...) short-circuit guard; matches existing guards at 1135/1154/1174.
+- TestIssue6825* tool index duplication and TestConvertOpenAIResponsesRequestToAntigravity_InterruptedMessageBeforeRealOutputPreservesPairingAndOrder: confirmed upstream-only (identical code/tests on pure v8.1.2 scratch worktree); root causes in antigravity stream FunctionIndex state and responses request interrupted-message content placement; noted for upstream fix.
+
 ## Prior candidate: v8.1.1
 
 Upstream release `v8.1.1` (`6eb8554f`) is merged over fork sync head `31ad6e0d` as merge commit `90f43b89`, with follow-up fixes on this branch. The merge was conflict-free; upstream's Antigravity, Devin, Copilot, pluginhost scheduler, registry, session identity, Codex Responses, and dependency updates are retained. No active patch was retired.
