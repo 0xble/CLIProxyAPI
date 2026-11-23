@@ -84,6 +84,7 @@ func trafficPolicyFor(a *Auth) (trafficPolicy, bool) {
 type trafficRequestKey struct{}
 type trafficRequest struct {
 	background bool
+	classified bool
 	countOnly  bool
 	waited     time.Duration
 	enabled    bool
@@ -129,6 +130,15 @@ func requestClassFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return "unclassified"
 	}
+	if request, _ := ctx.Value(trafficRequestKey{}).(*trafficRequest); request != nil {
+		if !request.classified {
+			return "unclassified"
+		}
+		if request.background {
+			return "background"
+		}
+		return "interactive"
+	}
 	if bg, ok := ctx.Value(trafficClassKey{}).(bool); ok {
 		if bg {
 			return "background"
@@ -146,10 +156,10 @@ func (m *Manager) consumeTrafficClass(ctx context.Context, opts cliproxyexecutor
 		opts.Headers = opts.Headers.Clone()
 		classifiedCtx := ConsumeTrafficClassHeader(ctx, opts.Headers)
 		if !classified {
-			background, _ = classifiedCtx.Value(trafficClassKey{}).(bool)
+			background, classified = classifiedCtx.Value(trafficClassKey{}).(bool)
 		}
 	}
-	request := &trafficRequest{background: background, enabled: !m.HomeEnabled(), countOnly: countOnly}
+	request := &trafficRequest{background: background, classified: classified, enabled: !m.HomeEnabled(), countOnly: countOnly}
 	return context.WithValue(ctx, trafficRequestKey{}, request), opts
 }
 

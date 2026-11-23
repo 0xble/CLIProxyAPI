@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +139,40 @@ func TestRequestClassAttribution(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			req := cliproxyexecutor.Request{Model: model}
+			if _, err := manager.Execute(c.ctx, []string{"claude"}, req, cliproxyexecutor.Options{}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	// SDK callers may carry the hint in Options headers instead of the handler context.
+	for _, c := range []struct{ name, hint, class string }{
+		{"sdk-interactive", "interactive", "interactive"},
+		{"sdk-background", "background", "background"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			hook.Reset()
+			req := cliproxyexecutor.Request{Model: model}
+			opts := cliproxyexecutor.Options{Headers: http.Header{requestClassHeader: []string{c.hint}}}
+			if _, err := manager.Execute(logging.WithRequestID(context.Background(), "class-"+c.name), []string{"claude"}, req, opts); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, entry := range hook.AllEntries() {
+				if entry.Message == "Selected upstream credential" {
+					found = true
+					if got := entry.Data["request_class"]; got != c.class {
+						t.Fatalf("request_class = %v, want %s", got, c.class)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing selection log")
+			}
+		})
+	}
+	for _, c := range cases {
+		t.Run(c.name+"-again", func(t *testing.T) {
 			req := cliproxyexecutor.Request{Model: model}
 			if _, err := manager.Execute(c.ctx, []string{"claude"}, req, cliproxyexecutor.Options{}); err != nil {
 				t.Fatal(err)
