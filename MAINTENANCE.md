@@ -16,9 +16,15 @@ Patch review:
 
 Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
-Upstream bugs fixed (upstreamable, will be proposed upstream):
-- GeminiVertexExecutor nil pointer panic on scanner.Err() for imagen models (lines 1147/1563): added (isImagenModel(baseModel) || ...) short-circuit guard; matches existing guards at 1135/1154/1174.
-- TestIssue6825* tool index duplication and TestConvertOpenAIResponsesRequestToAntigravity_InterruptedMessageBeforeRealOutputPreservesPairingAndOrder: confirmed upstream-only (identical code/tests on pure v8.1.2 scratch worktree); root causes in antigravity stream FunctionIndex state and responses request interrupted-message content placement; noted for upstream fix.
+## v8.1.2 regression record
+
+The v8.1.2 sync exposed two upstream regressions. Both are upstreamable; the production fixes already present in v8.1.2 are retained, while the fork-only test adaptations below make the intended contracts explicit.
+
+- **`4df055de` — Antigravity OpenAI streaming tool-call continuations.** The response converter in `internal/translator/antigravity/openai/chat-completions/antigravity_openai_response.go:213-257` now distinguishes a new named function call from an unnamed continuation, and `:322-400` emits object arguments as fragments that are closed on text/terminal transitions. Consequently, a terminal usage chunk can legitimately emit `{"index":N,"function":{"arguments":"}"}}` for an already-emitted call. The older Issue 6825 tests treated every tool-call delta as a new call and compared raw delta indices/argument fragments, so they saw `[0 1 2 0 1 2]` and split JSON. The test harness in `internal/runtime/executor/antigravity_issue6825_test.go:33-58,137-166` now keys calls by index, reassembles argument fragments, and still rejects a fresh out-of-order index. This is a deliberate test-contract change, not a production relaxation: distinct calls must retain unique indices, while continuation deltas reuse an existing index.
+
+- **`ae88b00c` — preserved user parts beside grouped function responses.** `internal/translator/antigravity/gemini/antigravity_gemini_request.go:995-1025,1127-1262` separates non-function parts, defers those user contents while a parallel `FunctionCallGroup` is pending, emits the completed function-response group first, then flushes deferred user turns. This is intentional because `ValidateGeminiFunctionCallPairing` permits a user boundary but the Responses interrupted-call synthesis must keep the complete response group adjacent and ordered. The older assertion in `internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go:760-801` expected the interrupted text before the response group; it now checks the ae88b00c design: responses at `contents[2]`, preserved text at `contents[3]`, while retaining the pairing and both response assertions. No production behavior was changed for this case.
+
+The GeminiVertexExecutor `scanner.Err()` nil-panic guard remains the separate upstreamable v8.1.2 fix recorded below.
 
 ## Prior candidate: v8.1.1
 
