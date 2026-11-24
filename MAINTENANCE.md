@@ -1,6 +1,34 @@
 # Maintenance
 
-## Current candidate: v8.1.1
+## Current candidate: v8.1.2
+
+Upstream release `v8.1.2` (`85225381`) is merged over fork main `8193b55c` (v8.1.1 plus CPA-001 through CPA-012) as merge commit `313192ec`. One textual conflict, in `sdk/cliproxy/auth/conductor_request_scoped_errors.go`, plus semantic call-site adaptations.
+
+v8.1.2 changes reviewed: Antigravity, Gemini, thinking-budget, translator, Copilot, and Vertex fixes; auth changes `ee5225e1` (parent affinity after fork failure), `f5ef0c0f` (stream bootstrap attempt identity), `14cc6ad1` (terminal ToS-violation state), and `8e0641c9`/`8860264b` (Antigravity credits fallback after unauthorized and credential lockouts).
+
+Patch review:
+
+- Conflict in `sdk/cliproxy/auth/conductor_request_scoped_errors.go`: upstream's new Antigravity target-rejected early return is written against the two-value matcher; it now returns the fork's three-value `("", 0, false)` (CPA-001).
+- Semantic adaptation: upstream's `TestApplyAuthFailureState_TOSViolationIsAlwaysTerminal` calls `applyAuthFailureState` with upstream's signature; it now passes the fork's cooldown duration and request-scoped arguments.
+- `f5ef0c0f` keeps attempt identity on stream bootstrap; the fork's Codex stream-bootstrap buffering and failover cooldown propagation remain intact.
+- `ee5225e1` preserves parent affinity after a fork failure; tier-locked session affinity is unchanged.
+- Re-check complete: no fork patch is equivalent in v8.1.2, so CPA-001 through CPA-012 remain.
+
+Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
+
+## v8.1.2 regression record
+
+The v8.1.2 sync exposed 2 upstream test failures that pure v8.1.2 also fails. Both are stale tests from before a deliberate upstream contract change. The test updates below are upstreamable, and no production code changed for them.
+
+- **`4df055de` — Antigravity OpenAI streaming tool-call continuations.** The response converter in `internal/translator/antigravity/openai/chat-completions/antigravity_openai_response.go:213-257` now distinguishes a new named function call from an unnamed continuation, and `:322-400` emits object arguments as fragments that are closed on text/terminal transitions. Consequently, a terminal usage chunk can legitimately emit `{"index":N,"function":{"arguments":"}"}}` for an already-emitted call. The older Issue 6825 tests treated every tool-call delta as a new call and compared raw delta indices/argument fragments, so they saw `[0 1 2 0 1 2]` and split JSON. The test harness in `internal/runtime/executor/antigravity_issue6825_test.go:33-58,137-166` now keys calls by index, reassembles argument fragments, and still rejects a fresh out-of-order index. This is a deliberate test-contract change, not a production relaxation: distinct calls must retain unique indices, while continuation deltas reuse an existing index.
+
+- **`ae88b00c` — preserved user parts beside grouped function responses.** `internal/translator/antigravity/gemini/antigravity_gemini_request.go:995-1025,1127-1262` separates non-function parts, defers those user contents while a parallel `FunctionCallGroup` is pending, emits the completed function-response group first, then flushes deferred user turns. This is intentional because `ValidateGeminiFunctionCallPairing` permits a user boundary but the Responses interrupted-call synthesis must keep the complete response group adjacent and ordered. The older assertion in `internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go:760-801` expected the interrupted text before the response group; it now checks the ae88b00c design: responses at `contents[2]`, preserved text at `contents[3]`, while retaining the pairing and both response assertions. No production behavior was changed for this case.
+
+- **GeminiVertexExecutor Imagen stream nil-scanner panic (upstream v8.1.2, upstreamable).** In `internal/runtime/executor/gemini_vertex_executor.go`, the Imagen streaming path leaves `scanner` nil. Upstream guarded the filter and abnormal-termination `scanner.Err()` checks with `isImagenModel`, but left the final scan-error read unconditional, which panics. The fork returns nil for a nil scanner in both stream copies. Non-Imagen streams are unchanged.
+
+`TestAIStudioExecutorClaudeMalformedFunctionCallCancelAfterErrorRecordsConductorFailure/stream_end` times out intermittently under host load (3s conductor wait). It fails at the same rate on fork main before this sync, so it is a pre-existing flake, not a sync regression.
+
+## Prior candidate: v8.1.1
 
 Upstream release `v8.1.1` (`6eb8554f`) is merged over fork sync head `31ad6e0d` as merge commit `90f43b89`, with follow-up fixes on this branch. The merge was conflict-free; upstream's Antigravity, Devin, Copilot, pluginhost scheduler, registry, session identity, Codex Responses, and dependency updates are retained. No active patch was retired.
 
@@ -14,22 +42,6 @@ Patch review:
 - `sdk/cliproxy/auth/conductor_execution.go`: fork-specific three-value cooldown propagation, Retry-After execution context, persisted cooldowns, key/model cooldowns, and related upstream execution behavior remain present.
 - `sdk/cliproxy/auth/conductor_stream.go`: Codex stream-bootstrap buffering, continuation behavior, and cooldown propagation remain present.
 - Re-check complete: CPA-001 through CPA-012, the read-only management divergence, upstream sync surfaces, cache-observation executor/helper tests, and later-document YAML redaction are covered by the candidate verification logs; no retirement condition is met.
-
-Activation covers the local CPA service only. This source candidate is for review; no installer, configuration, service restart, or provider canary is part of the sync. The source gate is `bin/ci gate`.
-
-## Prior candidate: v8.0.80
-
-Upstream release `v8.0.80` (`f5c5681a`) is merged over fork main `7cfb5a0d` (v8.0.79 plus CPA-001 through CPA-012 and account traffic shaping). One textual conflict, plus 7 semantic call-site adaptations.
-
-v8.0.80 changes reviewed: request auth preparation now honors request-scoped errors, Retry-After, and credential scope on `PrepareRequestAuth` failure and serializes with refresh locks; consistent cancellation and Retry-After cooldown handling; stream bootstrap Retry-After annotation scoped to the same upstream attempt; executeHome parity fixes; Responses output synthesis and refusal fallbacks for meta executors; gzip request bodies on Claude routes; Claude advisor blocks stripped after credential rebind; Antigravity OAuth refresh transport, 403 probe backoff, and credits fallback stop rules; Gemini 4 max completion tokens capped at 65536; credential-scoped after-auth plugin termination; and a regenerated Codex client catalog (#7697).
-
-Patch review:
-
-- Conflict in `internal/api/server_test.go`: upstream #7697 regenerated `codex_client_models.json` so gpt-5.5 offers the priority tier again and asserts it with `hasCodexServiceTier`. The fork's carried #7646 backport (upstream closed it unmerged) is dropped in favor of upstream's assertion.
-- Semantic adaptation (CPA-001): upstream added `matchRequestScopedErrorAction` call sites on the `PrepareRequestAuth` failure paths in `conductor_execution.go` (3), `conductor_home_execution.go` (1), and the Antigravity credits fallback in `conductor_home.go` (3), all written against upstream's two-value signature. They now use the fork's three-value form and pass the request-scoped cooldown to `applyRequestScopedActionToResult`, except the credits stream path, which never applies a result. The 4 new `annotateTrustedRetryAfterByHint` calls pass the execution context (Retry-After preservation across CPA hops).
-- v8.0.80 does not touch `selector.go`, `scheduler.go`, `quota_reserve.go`, `conductor_cooldown.go`, or the Codex terminal, stream, and websocket executors, so CPA-003, CPA-007, CPA-010, CPA-011, and CPA-012 hooks are unchanged.
-
-Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
 ## Intermediate candidate: v8.1.0 part 1
 
