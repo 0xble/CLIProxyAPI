@@ -45,6 +45,13 @@ Patch review:
 
 Upstream first-parent commit `80fb55d8ebaf9a17ed19b7278074d83e71a0214f` (`fix(antigravity): honor explicit lower and zero max-idle-conns-per-host pool limits`, position 29 of 47 after `v8.0.80`) is merged over fork main as the intermediate sync. The split keeps each review receipt below the 2 MB limit: the part-1 diff is 1,279,200 bytes and the remaining delta to the reviewed v8.1.1 tree is 1,837,108 bytes. Conflicts in `sdk/cliproxy/auth/conductor_execution.go` and `sdk/cliproxy/auth/conductor_stream.go` combine upstream stream/verification changes with the fork's three-value request-scoped cooldown propagation, execution-context Retry-After annotation, and Codex bootstrap/failover behavior. No multi-document management YAML change is in this range; the fork's read-only redaction remains unchanged.
 
+## Credential attribution and session priority
+
+- Default-level selection logs emit `Selected upstream credential` with the existing opaque `auth_index`, `provider`, `model`, and request ID when present. Upstream failure warnings carry the same index. Join this index to masked management config entries or existing per-attempt usage records; do not add raw auth IDs, account identities, or key suffixes to the new event.
+- Completion attribution already belongs to `UsageReporter`: its records retain `AuthIndex` and the request trace for both successful and failed attempts. No second completion channel or credential identity is introduced.
+- Session affinity intentionally outranks credential priority while the bound credential remains eligible. Priority chooses new bindings and fallback/rebinding; it does not preempt healthy sessions after a priority change or higher-priority recovery. This is already documented in `config.example.yaml` and covered by `TestManagerSessionAffinityPreservesBindingAcrossHigherPriorityRecovery`. Upstream [#4808](https://github.com/router-for-me/CLIProxyAPI/issues/4808) fixed the reverse behavior; the opt-in priority-failback proposal [#5089](https://github.com/router-for-me/CLIProxyAPI/pull/5089) was closed. Strict priority preemption would require a separately accepted routing change, not a bug fix.
+- Verification: manager-boundary INFO logging tests exercise execute, stream and count paths with two synthetic credentials, plus the real log formatter; warning tests cover HTTP and non-HTTP failures; usage tests cover successful and failed completion records. The canonical gate remains `bin/ci gate`. No live inference is needed.
+
 ## Background
 
 Maintained fork: `0xble/CLIProxyAPI` of `router-for-me/CLIProxyAPI`.

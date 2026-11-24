@@ -84,6 +84,7 @@ func trafficPolicyFor(a *Auth) (trafficPolicy, bool) {
 type trafficRequestKey struct{}
 type trafficRequest struct {
 	background bool
+	classified bool
 	countOnly  bool
 	waited     time.Duration
 	enabled    bool
@@ -120,18 +121,53 @@ func hasTrafficClassHint(headers http.Header) bool {
 	return false
 }
 
+// requestClassFromContext reports the Hermes request class for attribution logs at INFO.
+// "background" when the hint said background, "interactive" when a hint was present and not background,
+// "unclassified" when no hint was present. This uses presence of trafficClassKey (i.e. header was
+// consumed) to avoid conflating missing with interactive even though routing treats missing as interactive.
+// The hint header itself is never forwarded upstream.
+func requestClassFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return "unclassified"
+	}
+	if request, _ := ctx.Value(trafficRequestKey{}).(*trafficRequest); request != nil {
+		if !request.classified {
+			return "unclassified"
+		}
+		if request.background {
+			return "background"
+		}
+		return "interactive"
+	}
+	if bg, ok := ctx.Value(trafficClassKey{}).(bool); ok {
+		if bg {
+			return "background"
+		}
+		return "interactive"
+	}
+	return "unclassified"
+}
+
 // SDK callers may supply the hint in Options. Strip it without mutating their
 // headers, even when shaping is inactive. An inbound handler hint takes precedence.
 func (m *Manager) consumeTrafficClass(ctx context.Context, opts cliproxyexecutor.Options, countOnly bool) (context.Context, cliproxyexecutor.Options) {
-	background, classified := ctx.Value(trafficClassKey{}).(bool)
+	background := false
+	classified := false
+	if bg, ok := ctx.Value(trafficClassKey{}).(bool); ok {
+		background = bg
+		classified = true
+	}
 	if hasTrafficClassHint(opts.Headers) {
 		opts.Headers = opts.Headers.Clone()
 		classifiedCtx := ConsumeTrafficClassHeader(ctx, opts.Headers)
 		if !classified {
-			background, _ = classifiedCtx.Value(trafficClassKey{}).(bool)
+			if bg, ok := classifiedCtx.Value(trafficClassKey{}).(bool); ok {
+				background = bg
+				classified = true
+			}
 		}
 	}
-	request := &trafficRequest{background: background, enabled: !m.HomeEnabled(), countOnly: countOnly}
+	request := &trafficRequest{background: background, classified: classified, enabled: !m.HomeEnabled(), countOnly: countOnly}
 	return context.WithValue(ctx, trafficRequestKey{}, request), opts
 }
 
