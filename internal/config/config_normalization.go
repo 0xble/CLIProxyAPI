@@ -252,6 +252,47 @@ func ParseRequestScopedErrorCooldown(raw string) (time.Duration, bool) {
 	return duration, true
 }
 
+// sanitizeRequestScopedErrorRules trims whitespace, lowercases actions, and drops invalid rules.
+func sanitizeRequestScopedErrorRules(rules []RequestScopedErrorRule) []RequestScopedErrorRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	clean := make([]RequestScopedErrorRule, 0, len(rules))
+	for _, r := range rules {
+		action := strings.ToLower(strings.TrimSpace(r.Action))
+		cooldown := strings.TrimSpace(r.Cooldown)
+		if _, okCooldown := ParseRequestScopedErrorCooldown(cooldown); !okCooldown {
+			continue
+		}
+		match := make([]string, 0, len(r.Match))
+		for _, m := range r.Match {
+			if tm := strings.TrimSpace(m); tm != "" {
+				match = append(match, tm)
+			}
+		}
+		matchRegexr := make([]string, 0, len(r.MatchRegexr))
+		for _, re := range r.MatchRegexr {
+			if tre := strings.TrimSpace(re); tre != "" {
+				matchRegexr = append(matchRegexr, tre)
+			}
+		}
+		if r.Status <= 0 || (len(match) == 0 && len(matchRegexr) == 0) || action == "" {
+			continue
+		}
+		clean = append(clean, RequestScopedErrorRule{
+			Status:      r.Status,
+			Match:       match,
+			MatchRegexr: matchRegexr,
+			Action:      action,
+			Cooldown:    cooldown,
+		})
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	return clean
+}
+
 // SanitizeOAuthRequestScopedErrors normalizes and validates global OAuth request-scoped error rules.
 // It trims whitespace, normalizes channel keys to lower-case, validates status/action/cooldown, and drops invalid rules.
 func (cfg *Config) SanitizeOAuthRequestScopedErrors() {
@@ -261,40 +302,10 @@ func (cfg *Config) SanitizeOAuthRequestScopedErrors() {
 	out := make(map[string][]RequestScopedErrorRule, len(cfg.OAuthRequestScopedErrors))
 	for rawChannel, rules := range cfg.OAuthRequestScopedErrors {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
-		if channel == "" || len(rules) == 0 {
+		if channel == "" {
 			continue
 		}
-		clean := make([]RequestScopedErrorRule, 0, len(rules))
-		for _, r := range rules {
-			action := strings.ToLower(strings.TrimSpace(r.Action))
-			cooldown := strings.TrimSpace(r.Cooldown)
-			if _, okCooldown := ParseRequestScopedErrorCooldown(cooldown); !okCooldown {
-				continue
-			}
-			match := make([]string, 0, len(r.Match))
-			for _, m := range r.Match {
-				if tm := strings.TrimSpace(m); tm != "" {
-					match = append(match, tm)
-				}
-			}
-			matchRegexr := make([]string, 0, len(r.MatchRegexr))
-			for _, re := range r.MatchRegexr {
-				if tre := strings.TrimSpace(re); tre != "" {
-					matchRegexr = append(matchRegexr, tre)
-				}
-			}
-			if r.Status <= 0 || (len(match) == 0 && len(matchRegexr) == 0) || action == "" {
-				continue
-			}
-			clean = append(clean, RequestScopedErrorRule{
-				Status:      r.Status,
-				Match:       match,
-				MatchRegexr: matchRegexr,
-				Action:      action,
-				Cooldown:    cooldown,
-			})
-		}
-		if len(clean) > 0 {
+		if clean := sanitizeRequestScopedErrorRules(rules); len(clean) > 0 {
 			out[channel] = clean
 		}
 	}
