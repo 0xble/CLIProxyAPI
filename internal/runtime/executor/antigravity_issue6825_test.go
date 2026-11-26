@@ -33,27 +33,20 @@ func TestIssue6825StreamToolIndicesAcrossChunks(t *testing.T) {
 	}
 	var param any
 	var indices []int64
-	argumentsByIndex := make(map[int64]string)
+	var arguments []string
 	for _, chunk := range chunks {
 		for _, out := range sdktranslator.TranslateStream(context.Background(), sdktranslator.FormatAntigravity, sdktranslator.FormatOpenAI, "gemini-3-flash", original, translated, []byte(chunk), &param) {
 			for _, call := range ojson.GetBytes(out, "choices.0.delta.tool_calls").Array() {
-				index := call.Get("index").Int()
-				if _, seen := argumentsByIndex[index]; !seen {
-					indices = append(indices, index)
-				}
-				argumentsByIndex[index] += call.Get("function.arguments").String()
+				indices = append(indices, call.Get("index").Int())
+				arguments = append(arguments, call.Get("function.arguments").String())
 			}
 		}
 	}
 	if want := []int64{0, 1, 2}; !reflect.DeepEqual(indices, want) {
-		t.Errorf("unique stream tool indices = %v, want %v; continuation deltas must reuse their call index", indices, want)
-	}
-	arguments := make([]string, 0, len(indices))
-	for _, index := range indices {
-		arguments = append(arguments, argumentsByIndex[index])
+		t.Errorf("stream tool indices = %v, want %v; clients must not merge distinct calls", indices, want)
 	}
 	if want := []string{`{"tz":"UTC"}`, `{"tz":"America/Santiago"}`, `{"tz":"Asia/Tokyo"}`}; !reflect.DeepEqual(arguments, want) {
-		t.Errorf("reassembled tool arguments = %v, want %v", arguments, want)
+		t.Errorf("tool arguments = %v, want %v", arguments, want)
 	}
 }
 
@@ -148,20 +141,10 @@ func (c *issue6825Conversation) callWithContext(ctx context.Context, payload []b
 			reasoning += delta.Get("reasoning_content").String()
 			for _, call := range delta.Get("tool_calls").Array() {
 				index := int(call.Get("index").Int())
-				if index > len(calls) {
-					c.t.Fatalf("unexpected new tool index %d, want at most %d", index, len(calls))
+				if index != len(calls) {
+					c.t.Fatalf("unexpected new tool index %d, want %d", index, len(calls))
 				}
-				if index == len(calls) {
-					calls = append(calls, map[string]any{"id": call.Get("id").String(), "type": "function", "function": map[string]string{"name": call.Get("function.name").String(), "arguments": call.Get("function.arguments").String()}})
-					continue
-				}
-				// v8.1.2's Antigravity stream contract emits continuation
-				// argument deltas with the existing call index and no id/name.
-				function, ok := calls[index]["function"].(map[string]string)
-				if !ok {
-					c.t.Fatalf("tool index %d has invalid function state: %#v", index, calls[index])
-				}
-				function["arguments"] += call.Get("function.arguments").String()
+				calls = append(calls, map[string]any{"id": call.Get("id").String(), "type": "function", "function": map[string]string{"name": call.Get("function.name").String(), "arguments": call.Get("function.arguments").String()}})
 			}
 		}
 	}
