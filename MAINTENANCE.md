@@ -1,6 +1,23 @@
 # Maintenance
 
-## Current candidate: v8.1.2
+## Current candidate: v8.1.4
+
+Upstream releases `v8.1.3` (`8cd6817b`) and `v8.1.4` (`38fe9295`) are merged over fork main `10bf9bd4` (v8.1.2 plus CPA-001 through CPA-012) as 2 sequential merge commits, `03e22ff0` and `984ecd66`. That keeps `git describe` on the newest upstream tag.
+
+Conflicts and resolutions:
+
+- `internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go` (v8.1.3): took upstream. Upstream `3b1387ad`/`e1c37c02` now assert the same ae88b00c ordering the fork adapted in v8.1.2, with responses at `contents[2]` and user text at `contents[3]`. They also assert the renamed `response.output` field. The fork's v8.1.2 test adaptation is retired.
+- `internal/runtime/executor/gemini_vertex_executor.go` (v8.1.4): took upstream. Upstream `db276e8b` ships the same Imagen nil-scanner guard as the fork's v8.1.2 fix (`scanner == nil || scanner.Err() == nil`), so the fork copy is retired.
+- `internal/config/config_normalization.go` (v8.1.4): auto-resolved. It keeps the fork's request-scoped error `cooldown` parsing (CPA-001) and Codex `credit-reset-day` validation (CPA-012) beside upstream's changes.
+- `internal/runtime/executor/antigravity_issue6825_test.go`: restored to upstream. Upstream `fe571afe` now emits each complete tool call once, with no trailing duplicate closing deltas, and upstream's stricter test passes. The fork's v8.1.2 continuation-delta test adaptation is retired.
+
+Upstream-only defect carried as a fork fix: v8.1.4 fails `go vet` with `unreachable code` at `internal/translator/interactions/claude/interactions_claude_response.go:237` because a `return nil` follows an exhaustive `switch`. The fork removes that line. It is upstreamable.
+
+Re-check: no CPA patch is equivalent in v8.1.3 or v8.1.4, so CPA-001 through CPA-012 remain.
+
+Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA. The source gate is `bin/ci gate`.
+
+## Prior candidate: v8.1.2
 
 Upstream release `v8.1.2` (`85225381`) is merged over fork main `8193b55c` (v8.1.1 plus CPA-001 through CPA-012) as merge commit `313192ec`. One textual conflict, in `sdk/cliproxy/auth/conductor_request_scoped_errors.go`, plus semantic call-site adaptations.
 
@@ -17,6 +34,8 @@ Patch review:
 Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA; it canaries the build on a private port before switching. The source gate is `bin/ci gate`.
 
 ## v8.1.2 regression record
+
+All 3 fork changes below were retired in v8.1.3 and v8.1.4, when upstream adopted equivalent fixes.
 
 The v8.1.2 sync exposed 2 upstream test failures that pure v8.1.2 also fails. Both are stale tests from before a deliberate upstream contract change. The test updates below are upstreamable, and no production code changed for them.
 

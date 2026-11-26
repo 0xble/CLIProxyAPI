@@ -1911,6 +1911,136 @@ func TestConvertAntigravityResponseToClaude_SignedContinuationKeepsOpenToolBlock
 	}
 }
 
+func TestConvertAntigravityResponseToClaude_SignedToolContinuationTransitionEmitsDeferredSignature(t *testing.T) {
+	origRequest := []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"read_file","input_schema":{"type":"object","properties":{"path":{"type":"string"},"line":{"type":"integer"}}}}]}`)
+	translatedRequest := []byte(`{"model":"gemini-3.8-flash-high"}`)
+	continuationSignature := testGeminiEPrefixSignature(t)
+	carrierSignature := encodeGeminiClaudeCarrierSignature(continuationSignature, geminiClaudeCarrierPrevious, geminiClaudeCarrierFunction)
+
+	testCases := []struct {
+		name            string
+		followUpChunk   []byte
+		wantBlockType   string
+		wantDeltaType   string
+		wantDeltaField  string
+		wantDeltaValue  string
+		replayFollowUp  string
+		checkReplayPart func(t *testing.T, part ojson.Result)
+	}{
+		{
+			name:           "tool_use_to_thinking",
+			followUpChunk:  []byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"follow-up reasoning","thought":true}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":4,"thoughtsTokenCount":2,"totalTokenCount":16},"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+			wantBlockType:  "thinking",
+			wantDeltaType:  "thinking_delta",
+			wantDeltaField: "delta.thinking",
+			wantDeltaValue: "follow-up reasoning",
+			replayFollowUp: `{"type":"thinking","thinking":"follow-up reasoning"}`,
+			checkReplayPart: func(t *testing.T, part ojson.Result) {
+				t.Helper()
+				if !part.Get("thought").Bool() || part.Get("text").String() != "follow-up reasoning" || part.Get("thoughtSignature").String() != "" {
+					t.Fatalf("unexpected replayed thinking part: %s", part.Raw)
+				}
+			},
+		},
+		{
+			name:           "tool_use_to_text",
+			followUpChunk:  []byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"follow-up answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":4,"totalTokenCount":14},"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+			wantBlockType:  "text",
+			wantDeltaType:  "text_delta",
+			wantDeltaField: "delta.text",
+			wantDeltaValue: "follow-up answer",
+			replayFollowUp: `{"type":"text","text":"follow-up answer"}`,
+			checkReplayPart: func(t *testing.T, part ojson.Result) {
+				t.Helper()
+				if part.Get("thought").Bool() || part.Get("text").String() != "follow-up answer" || part.Get("thoughtSignature").String() != "" {
+					t.Fatalf("unexpected replayed text part: %s", part.Raw)
+				}
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			firstChunk := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{"path":"a.go"}}}]}}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`)
+			continuationChunk := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{"line":1}},"thoughtSignature":"` + continuationSignature + `"}]}}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`)
+
+			var param any
+			streamBytes := bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, firstChunk, &param), nil)
+			streamBytes = append(streamBytes, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, continuationChunk, &param), nil)...)
+			streamBytes = append(streamBytes, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, tc.followUpChunk, &param), nil)...)
+			streamBytes = append(streamBytes, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, []byte("[DONE]"), &param), nil)...)
+			streamText := string(streamBytes)
+
+			var toolInput strings.Builder
+			var followUpContent strings.Builder
+			var carrierSig string
+			blockTypes := map[int64]string{}
+			stoppedIndices := map[int64]bool{}
+			for _, line := range strings.Split(streamText, "\n") {
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				payload := strings.TrimPrefix(line, "data: ")
+				eventType := ojson.Get(payload, "type").String()
+				index := ojson.Get(payload, "index").Int()
+				switch eventType {
+				case "content_block_start":
+					blockTypes[index] = ojson.Get(payload, "content_block.type").String()
+				case "content_block_stop":
+					stoppedIndices[index] = true
+				case "content_block_delta":
+					deltaType := ojson.Get(payload, "delta.type").String()
+					if deltaType == "input_json_delta" && index == 0 {
+						toolInput.WriteString(ojson.Get(payload, "delta.partial_json").String())
+					}
+					if deltaType == "signature_delta" && index == 1 {
+						carrierSig = ojson.Get(payload, "delta.signature").String()
+					}
+					if deltaType == tc.wantDeltaType && index == 2 {
+						followUpContent.WriteString(ojson.Get(payload, tc.wantDeltaField).String())
+					}
+				}
+			}
+
+			if blockTypes[0] != "tool_use" || !stoppedIndices[0] {
+				t.Fatalf("expected stopped tool_use block at index 0, got type=%q stopped=%v (stream: %s)", blockTypes[0], stoppedIndices[0], streamText)
+			}
+			parsedInput := ojson.Parse(toolInput.String())
+			if !parsedInput.IsObject() || parsedInput.Get("path").String() != "a.go" || parsedInput.Get("line").Int() != 1 {
+				t.Fatalf("expected merged tool input, got %q (stream: %s)", toolInput.String(), streamText)
+			}
+			if blockTypes[1] != "thinking" || !stoppedIndices[1] || carrierSig != carrierSignature {
+				t.Fatalf("expected deferred tool signature carrier at index 1 (type=%q stopped=%v sig=%q want=%q) (stream: %s)", blockTypes[1], stoppedIndices[1], carrierSig, carrierSignature, streamText)
+			}
+			if blockTypes[2] != tc.wantBlockType || !stoppedIndices[2] || followUpContent.String() != tc.wantDeltaValue {
+				t.Fatalf("expected %s block at index 2 with %q, got type=%q stopped=%v content=%q (stream: %s)", tc.wantBlockType, tc.wantDeltaValue, blockTypes[2], stoppedIndices[2], followUpContent.String(), streamText)
+			}
+
+			roundTripRequest := []byte(`{"model":"gemini-3.8-flash-high","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"read-file-1","name":"read_file","input":{"path":"a.go","line":1}},{"type":"thinking","thinking":"","signature":"` + carrierSignature + `"},` + tc.replayFollowUp + `]}]}`)
+			roundTrip, errConvert := ConvertClaudeRequestToAntigravity("gemini-3.8-flash-high", roundTripRequest, false)
+			if errConvert != nil {
+				t.Fatalf("round-trip conversion failed: %v", errConvert)
+			}
+			parts := ojson.GetBytesNoCopy(roundTrip, "request.contents.0.parts").Array()
+			if len(parts) != 2 {
+				t.Fatalf("expected 2 replayed parts, got %d: %s", len(parts), roundTrip)
+			}
+			var toolPart, followUpPart ojson.Result
+			for _, part := range parts {
+				if part.Get("functionCall").Exists() {
+					toolPart = part
+				} else {
+					followUpPart = part
+				}
+			}
+			if toolPart.Get("functionCall.name").String() != "read_file" || toolPart.Get("thoughtSignature").String() != continuationSignature {
+				t.Fatalf("continuation signature did not remain attached to read_file: %s", roundTrip)
+			}
+			tc.checkReplayPart(t, followUpPart)
+		})
+	}
+}
+
 func TestConvertAntigravityResponseToClaude_ImplicitOpenToolContinuationOrdering(t *testing.T) {
 	origRequest := []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"echo","input_schema":{"type":"object","properties":{}}}]}`)
 	translatedRequest := []byte(`{"model":"gemini-3.8-flash-high"}`)
@@ -1946,6 +2076,176 @@ func TestConvertAntigravityResponseToClaude_ImplicitOpenToolContinuationOrdering
 			if got := deltaPartial.String(); got != tc.want {
 				t.Fatalf("expected concatenated partial_json %s, got %q (full output: %s)", tc.want, got, streamText)
 			}
+		})
+	}
+}
+
+func TestConvertAntigravityResponseToClaude_ParameterlessToolEmitsEmptyObjectDelta(t *testing.T) {
+	translatedRequest := []byte(`{"model":"gemini-3.8-flash-high"}`)
+
+	testCases := []struct {
+		name        string
+		origRequest []byte
+		chunks      [][]byte
+	}{
+		{
+			name:        "closed_empty_schema_empty_args",
+			origRequest: []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"EnterPlanMode","input_schema":{"type":"object","properties":{},"additionalProperties":false}}]}`),
+			chunks: [][]byte{
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"EnterPlanMode","args":{}}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte("[DONE]"),
+			},
+		},
+		{
+			name:        "closed_empty_schema_placeholder_and_continuation",
+			origRequest: []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"EnterPlanMode","input_schema":{"type":"object","properties":{},"additionalProperties":false}}]}`),
+			chunks: [][]byte{
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"EnterPlanMode","args":{"reason":"entering plan mode"}}}]}}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{"reason":"more"}}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte("[DONE]"),
+			},
+		},
+		{
+			name:        "missing_schema_empty_args",
+			origRequest: []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"Ping"}]}`),
+			chunks: [][]byte{
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"Ping","args":{}}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte("[DONE]"),
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var param any
+			var streamBytes []byte
+			for _, chunk := range tc.chunks {
+				streamBytes = append(streamBytes, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", tc.origRequest, translatedRequest, chunk, &param), nil)...)
+			}
+			streamText := string(streamBytes)
+
+			deltaCount := 0
+			var deltaPartial strings.Builder
+			for _, line := range strings.Split(streamText, "\n") {
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				payload := strings.TrimPrefix(line, "data: ")
+				if ojson.Get(payload, "delta.type").String() == "input_json_delta" {
+					deltaCount++
+					deltaPartial.WriteString(ojson.Get(payload, "delta.partial_json").String())
+				}
+			}
+			if deltaCount != 1 || deltaPartial.String() != "{}" {
+				t.Fatalf("expected 1 input_json_delta with {}, got count=%d partial_json=%q (full output: %s)", deltaCount, deltaPartial.String(), streamText)
+			}
+		})
+	}
+}
+
+func TestConvertAntigravityResponseToClaude_WhitespaceOnlyObjectArgs(t *testing.T) {
+	// Use an open dynamic schema (additionalProperties: true) so argument cleaning preserves
+	// raw whitespace-only empty objects like "{ }" and forwards them to appendToolInputObject.
+	origRequest := []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"search","input_schema":{"type":"object","additionalProperties":true}}]}`)
+	translatedRequest := []byte(`{"model":"gemini-3.8-flash-high"}`)
+
+	testCases := []struct {
+		name   string
+		chunks [][]byte
+		check  func(t *testing.T, partial string, streamText string)
+	}{
+		{
+			name: "whitespace_empty_then_real_args",
+			chunks: [][]byte{
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"search","args":{ }}}]}}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{"k":"v"}}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte("[DONE]"),
+			},
+			check: func(t *testing.T, partial string, streamText string) {
+				t.Helper()
+				if !ojson.Valid(partial) || ojson.Parse(partial).Get("k").String() != "v" {
+					t.Fatalf("expected valid JSON object with k=v, got %q (full output: %s)", partial, streamText)
+				}
+			},
+		},
+		{
+			name: "newline_empty_then_real_args",
+			chunks: [][]byte{
+				[]byte("{\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"search\",\"args\":{\n}}}]}}],\"modelVersion\":\"gemini-3.8-flash-high\",\"responseId\":\"resp-1\"}}"),
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{"k":"v"}}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte("[DONE]"),
+			},
+			check: func(t *testing.T, partial string, streamText string) {
+				t.Helper()
+				if !ojson.Valid(partial) || ojson.Parse(partial).Get("k").String() != "v" {
+					t.Fatalf("expected valid JSON object with k=v, got %q (full output: %s)", partial, streamText)
+				}
+			},
+		},
+		{
+			name: "real_args_then_whitespace_empty",
+			chunks: [][]byte{
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"search","args":{"k":"v"}}}]}}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{ }}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte("[DONE]"),
+			},
+			check: func(t *testing.T, partial string, streamText string) {
+				t.Helper()
+				if !ojson.Valid(partial) || ojson.Parse(partial).Get("k").String() != "v" {
+					t.Fatalf("expected valid JSON object with k=v, got %q (full output: %s)", partial, streamText)
+				}
+			},
+		},
+		{
+			name: "single_chunk_whitespace_empty_object",
+			chunks: [][]byte{
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"search","args":{ }}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte("[DONE]"),
+			},
+			check: func(t *testing.T, partial string, streamText string) {
+				t.Helper()
+				if partial != "{}" {
+					t.Fatalf("expected {}, got %q (full output: %s)", partial, streamText)
+				}
+			},
+		},
+		{
+			name: "whitespace_padded_objects_merged",
+			chunks: [][]byte{
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"search","args":{ "a": 1 }}}]}}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"args":{ "b": 2 }}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.8-flash-high","responseId":"resp-1"}}`),
+				[]byte("[DONE]"),
+			},
+			check: func(t *testing.T, partial string, streamText string) {
+				t.Helper()
+				parsed := ojson.Parse(partial)
+				if !ojson.Valid(partial) || !parsed.IsObject() || parsed.Get("a").Int() != 1 || parsed.Get("b").Int() != 2 {
+					t.Fatalf("expected valid merged JSON object {a:1, b:2}, got %q (full output: %s)", partial, streamText)
+				}
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var param any
+			var streamBytes []byte
+			for _, chunk := range tc.chunks {
+				streamBytes = append(streamBytes, bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", origRequest, translatedRequest, chunk, &param), nil)...)
+			}
+			streamText := string(streamBytes)
+
+			var deltaPartial strings.Builder
+			for _, line := range strings.Split(streamText, "\n") {
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				payload := strings.TrimPrefix(line, "data: ")
+				if ojson.Get(payload, "delta.type").String() == "input_json_delta" {
+					deltaPartial.WriteString(ojson.Get(payload, "delta.partial_json").String())
+				}
+			}
+			tc.check(t, deltaPartial.String(), streamText)
 		})
 	}
 }
@@ -2169,4 +2469,105 @@ func TestConvertAntigravityResponseToClaudeNonStream_WebSearchGroundingRespectsF
 			}
 		})
 	}
+}
+
+func TestConvertAntigravityResponseToClaudeNonStream_FallbackIDWhenResponseIDMissingOrBlank(t *testing.T) {
+	requestJSON := []byte(`{"model":"claude-sonnet-4-6"}`)
+	cases := []struct {
+		name    string
+		rawJSON []byte
+	}{
+		{
+			name:    "missing_response_id",
+			rawJSON: []byte(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}}`),
+		},
+		{
+			name:    "empty_response_id",
+			rawJSON: []byte(`{"response":{"responseId":"","candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}}`),
+		},
+		{
+			name:    "whitespace_response_id",
+			rawJSON: []byte(`{"response":{"responseId":"   ","candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}}`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out1 := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-sonnet-4-6", requestJSON, requestJSON, tc.rawJSON, nil)
+			out2 := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-sonnet-4-6", requestJSON, requestJSON, tc.rawJSON, nil)
+
+			id1 := ojson.GetBytesNoCopy(out1, "id").String()
+			id2 := ojson.GetBytesNoCopy(out2, "id").String()
+			if !strings.HasPrefix(id1, "msg_") || len(id1) <= len("msg_") {
+				t.Fatalf("first fallback id = %q, want non-empty msg_ prefix; body=%s", id1, string(out1))
+			}
+			if !strings.HasPrefix(id2, "msg_") || len(id2) <= len("msg_") {
+				t.Fatalf("second fallback id = %q, want non-empty msg_ prefix; body=%s", id2, string(out2))
+			}
+			if id1 == id2 {
+				t.Fatalf("expected unique fallback ids across calls, got duplicate %q", id1)
+			}
+		})
+	}
+
+	t.Run("preserves_non_empty_response_id", func(t *testing.T) {
+		rawJSON := []byte(`{"response":{"responseId":"  req_vrtx_123  ","candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}}`)
+		out := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "claude-sonnet-4-6", requestJSON, requestJSON, rawJSON, nil)
+		if got := ojson.GetBytesNoCopy(out, "id").String(); got != "req_vrtx_123" {
+			t.Fatalf("id = %q, want %q; body=%s", got, "req_vrtx_123", string(out))
+		}
+	})
+}
+
+func TestConvertAntigravityResponseToClaudeStream_FallbackIDWhenResponseIDMissingOrBlank(t *testing.T) {
+	requestJSON := []byte(`{"model":"claude-sonnet-4-6"}`)
+	cases := []struct {
+		name  string
+		chunk []byte
+	}{
+		{
+			name:  "missing_response_id",
+			chunk: []byte(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}}`),
+		},
+		{
+			name:  "empty_response_id",
+			chunk: []byte(`{"response":{"responseId":"","candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}}`),
+		},
+		{
+			name:  "whitespace_response_id",
+			chunk: []byte(`{"response":{"responseId":"  	 ","candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}}`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var p1, p2 any
+			out1 := string(bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", requestJSON, requestJSON, tc.chunk, &p1), nil))
+			out2 := string(bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", requestJSON, requestJSON, tc.chunk, &p2), nil))
+
+			start1 := sseDataForEvent(t, out1, "message_start")
+			start2 := sseDataForEvent(t, out2, "message_start")
+			id1 := ojson.Get(start1, "message.id").String()
+			id2 := ojson.Get(start2, "message.id").String()
+			if !strings.HasPrefix(id1, "msg_") || len(id1) <= len("msg_") {
+				t.Fatalf("first stream fallback id = %q, want non-empty msg_ prefix; event=%s", id1, start1)
+			}
+			if !strings.HasPrefix(id2, "msg_") || len(id2) <= len("msg_") {
+				t.Fatalf("second stream fallback id = %q, want non-empty msg_ prefix; event=%s", id2, start2)
+			}
+			if id1 == id2 {
+				t.Fatalf("expected unique stream fallback ids across calls, got duplicate %q", id1)
+			}
+		})
+	}
+
+	t.Run("preserves_non_empty_response_id", func(t *testing.T) {
+		chunk := []byte(`{"response":{"responseId":"  req_vrtx_stream_1  ","candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}]}}`)
+		var param any
+		out := string(bytes.Join(ConvertAntigravityResponseToClaude(context.Background(), "claude-sonnet-4-6", requestJSON, requestJSON, chunk, &param), nil))
+		start := sseDataForEvent(t, out, "message_start")
+		if got := ojson.Get(start, "message.id").String(); got != "req_vrtx_stream_1" {
+			t.Fatalf("message.id = %q, want %q; event=%s", got, "req_vrtx_stream_1", start)
+		}
+	})
 }
