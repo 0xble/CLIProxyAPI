@@ -1,6 +1,21 @@
 # Maintenance
 
-## Current candidate: v8.1.4
+## Current candidate: v8.1.7
+
+Upstream releases `v8.1.5` (`13d87daf`), `v8.1.6` (`0aaf6d1c`) and `v8.1.7` (`47f18e4d`) are merged over fork main `0bb3765e` (v8.1.4 plus CPA-001 through CPA-012) as 3 sequential merge commits, `1b9d8cf3`, `bf719e08` and `620ac2d2`. That keeps `git describe` on the newest upstream tag.
+
+Conflicts and resolutions (v8.1.5 only, both additive):
+
+- `sdk/cliproxy/auth/cooldown_state.go`: kept both. The fork's `CreditPark` field (CPA-012) sits beside upstream `06a6e4bd`'s `NonCapacityCooldownUntil` and `IndependentNonCapacityCooldownUntil` fields, which keep a non-capacity cooldown from being masked by a later capacity 503 across restarts.
+- `internal/runtime/executor/antigravity_executor_credits_test.go`: kept both. The fork's bounded wait for the recovered credits hint runs before upstream `41830213`'s credits-refresh state lookup.
+
+v8.1.6 and v8.1.7 merged cleanly. Every file the fork does not touch is byte-identical to upstream v8.1.7. Every other file both sides changed is the clean 3-way merge of fork main and v8.1.7.
+
+Re-check: no CPA patch is equivalent in v8.1.5 through v8.1.7, so CPA-001 through CPA-012 remain.
+
+Activation covers the local CPA service only. Use the existing installer on the published merged fork SHA. The source gate is `bin/ci gate`.
+
+## Prior candidate: v8.1.4
 
 Upstream releases `v8.1.3` (`8cd6817b`) and `v8.1.4` (`38fe9295`) are merged over fork main `10bf9bd4` (v8.1.2 plus CPA-001 through CPA-012) as 2 sequential merge commits, `03e22ff0` and `984ecd66`. That keeps `git describe` on the newest upstream tag.
 
