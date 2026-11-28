@@ -633,7 +633,15 @@ func TestFileTokenStoreSaveReplacesAuthFileAtomically(t *testing.T) {
 	if errReadDir != nil {
 		t.Fatalf("read base dir: %v", errReadDir)
 	}
-	if len(entries) != 1 || entries[0].Name() != fileName {
+	// The fork's directory-wide login lock (CPA-008) persists beside credentials
+	// by design; any other entry would be a leftover temp file.
+	var names []string
+	for _, entry := range entries {
+		if entry.Name() != ".auth-store.lock" {
+			names = append(names, entry.Name())
+		}
+	}
+	if len(names) != 1 || names[0] != fileName {
 		t.Fatalf("unexpected files left in auth dir: %v", entries)
 	}
 }

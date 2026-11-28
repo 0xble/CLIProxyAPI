@@ -10,6 +10,8 @@ Conflicts and resolutions:
 - `sdk/cliproxy/auth/conductor_cooldown.go`: kept both. Upstream `37caab7d`'s `markResult` now returns whether an operator verification applied. The fork extracts the model projection into `projectAuthModels`, so the return goes at the end of `markResult`, after the hook, event and affinity calls.
 - `sdk/cliproxy/service_auth.go`: upstream `ee8b3f0c` split registration into `prepareCoreAuthForModelRegistration` and `updateCoreAuthForModelRegistration`, and registers file snapshots with `RegisterFileSnapshotIfAbsent`. The fork's CPA-006 supersede mark now passes through both paths. The update path keeps `supersedesUnversionedSnapshot` beside `isStaleCoreAuth` and reports `prepareResult` (applied, base and new generation), and the new file-snapshot registration path also reports `applied`, which keeps the `42035f23` regression covered.
 
+Fork adaptation: upstream `6021aba9`'s `TestFileTokenStoreSaveReplacesAuthFileAtomically` expects the auth directory to hold only the saved credential. CPA-008's directory-wide `.auth-store.lock` persists there by design, so the test now ignores that entry and still fails on any leftover temp file.
+
 Re-check: no CPA patch is equivalent in v8.1.8. Upstream billing quota failover does not park credit-exhausted keys (CPA-012), and the registration split does not carry the #6559 supersede mark (CPA-006). CPA-001 through CPA-012 remain.
 
 ## Prior candidate: v8.1.7
