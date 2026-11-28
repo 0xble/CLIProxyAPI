@@ -1,6 +1,18 @@
 # Maintenance
 
-## Current candidate: v8.1.7
+## Current candidate: v8.1.8
+
+Upstream release `v8.1.8` (`dbe641f2`) is merged over fork main `246e2eef` (v8.1.7 plus CPA-001 through CPA-012) as 1 merge commit, so `git describe` stays on the newest upstream tag.
+
+Conflicts and resolutions:
+
+- `internal/runtime/executor/codex_executor_stream.go` and `codex_websockets_stream.go`: kept both. Upstream `b2e33162` fails over structured in-stream billing quota errors during bootstrap buffering. The fork's credit-exhaustion failover (CPA-012) is a separate signal that parks the API key, so both classifiers trigger bootstrap failover. The fork's credit branch still returns before upstream's billing branch, which keeps parking unchanged.
+- `sdk/cliproxy/auth/conductor_cooldown.go`: kept both. Upstream `37caab7d`'s `markResult` now returns whether an operator verification applied. The fork extracts the model projection into `projectAuthModels`, so the return goes at the end of `markResult`, after the hook, event and affinity calls.
+- `sdk/cliproxy/service_auth.go`: upstream `ee8b3f0c` split registration into `prepareCoreAuthForModelRegistration` and `updateCoreAuthForModelRegistration`, and registers file snapshots with `RegisterFileSnapshotIfAbsent`. The fork's CPA-006 supersede mark now passes through both paths. The update path keeps `supersedesUnversionedSnapshot` beside `isStaleCoreAuth` and reports `prepareResult` (applied, base and new generation), and the new file-snapshot registration path also reports `applied`, which keeps the `42035f23` regression covered.
+
+Re-check: no CPA patch is equivalent in v8.1.8. Upstream billing quota failover does not park credit-exhausted keys (CPA-012), and the registration split does not carry the #6559 supersede mark (CPA-006). CPA-001 through CPA-012 remain.
+
+## Prior candidate: v8.1.7
 
 Upstream releases `v8.1.5` (`13d87daf`), `v8.1.6` (`0aaf6d1c`) and `v8.1.7` (`47f18e4d`) are merged over fork main `0bb3765e` (v8.1.4 plus CPA-001 through CPA-012) as 3 sequential merge commits, `1b9d8cf3`, `bf719e08` and `620ac2d2`. That keeps `git describe` on the newest upstream tag.
 
